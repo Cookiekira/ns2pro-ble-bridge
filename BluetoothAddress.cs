@@ -54,7 +54,11 @@ internal static class BluetoothAddress
 
     public static void SaveCached(string path, ulong address)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var directory = Path.GetDirectoryName(Path.GetFullPath(path));
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
         File.WriteAllText(path, JsonSerializer.Serialize(new CachedDevice(Format(address)), SourceGenerationContext.Default.CachedDevice));
     }
 }

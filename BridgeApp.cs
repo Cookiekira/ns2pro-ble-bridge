@@ -24,10 +24,7 @@ internal sealed class BridgeApp : IDisposable
     {
         if (_options.ForgetDevice)
         {
-            if (File.Exists(_options.CacheFile))
-            {
-                File.Delete(_options.CacheFile);
-            }
+            DeleteCacheFile(_options.CacheFile);
             _logger.Info("Forgot cached BLE controller.");
             return 0;
         }
@@ -98,32 +95,25 @@ internal sealed class BridgeApp : IDisposable
             return;
         }
 
-        var left = Array.Empty<byte>();
-        var right = Array.Empty<byte>();
         if ((flags & NS2ProProtocol.OutputFlagRumble) != 0)
         {
-            left = new byte[16];
-            right = new byte[16];
-            new ReadOnlySpan<byte>(leftRumble, 16).CopyTo(left);
-            new ReadOnlySpan<byte>(rightRumble, 16).CopyTo(right);
+            controller.SendRumble(
+                new ReadOnlySpan<byte>(leftRumble, 16),
+                new ReadOnlySpan<byte>(rightRumble, 16));
         }
 
-        _ = Task.Run(() => RunOutputAsync(controller, left, right, flags, playerLedMask));
+        if ((flags & NS2ProProtocol.OutputFlagLed) != 0)
+        {
+            _ = Task.Run(() => RunLedOutputAsync(controller, playerLedMask));
+        }
     }
 
-    private static async Task RunOutputAsync(BleController controller, byte[] left, byte[] right, byte flags, byte playerLedMask)
+    private static async Task RunLedOutputAsync(BleController controller, byte playerLedMask)
     {
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            if ((flags & NS2ProProtocol.OutputFlagRumble) != 0)
-            {
-                controller.SendRumble(left, right);
-            }
-            if ((flags & NS2ProProtocol.OutputFlagLed) != 0)
-            {
-                await controller.SetPlayerLedsAsync(playerLedMask, cts.Token).ConfigureAwait(false);
-            }
+            await controller.SetPlayerLedsAsync(playerLedMask, cts.Token).ConfigureAwait(false);
         }
         catch
         {
@@ -143,6 +133,7 @@ internal sealed class BridgeApp : IDisposable
             _logger.Info($"Using cached BLE controller {BluetoothAddress.Format(cachedAddress)}.");
             return cachedAddress;
         }
+
         var found = await BleController.ScanAsync(_logger, ct).ConfigureAwait(false);
         _logger.Info($"Found {found.Name} at {BluetoothAddress.Format(found.Address)}.");
         return found.Address;
@@ -152,5 +143,13 @@ internal sealed class BridgeApp : IDisposable
     {
         e.Cancel = true;
         _stop.Cancel();
+    }
+
+    private static void DeleteCacheFile(string path)
+    {
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
     }
 }

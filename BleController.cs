@@ -9,6 +9,9 @@ namespace Ns2Pro.BleBridge;
 
 internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDisposable
 {
+    private const int RumbleMinIntervalMs = 20;
+    private const int StatsIntervalMs = 5_000;
+
     private static readonly Guid InitUuid = Guid.Parse("00c5af5d-1964-4e30-8f51-1956f96bd282");
     private static readonly Guid InputUuid = Guid.Parse("ab7de9be-89fe-49ad-828f-118f09df7fd2");
     private static readonly Guid VibrationUuid = Guid.Parse("cc483f51-9258-427d-a939-630c31f72b05");
@@ -25,6 +28,11 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
     private StickCalibration? _primaryStick;
     private StickCalibration? _secondaryStick;
     private TaskCompletionSource<byte[]> _nextCommandResponse = NewResponseSource();
+    private long _inputReportCount;
+    private long _rumbleRequestCount;
+    private long _rumbleWriteCount;
+    private long _lastStatsTicks = Environment.TickCount64;
+    private long _lastAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false);
 
     public event Action<NS2ProInputState>? InputReceived;
 
@@ -102,6 +110,7 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
     public void SendRumble(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
     {
         var packet = NS2ProProtocol.BuildRumblePacket(left, right);
+        Interlocked.Increment(ref _rumbleRequestCount);
         lock (_rumbleLock)
         {
             _pendingRumble = packet;
@@ -133,8 +142,15 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
 
     private async Task ProcessRumbleLoopAsync()
     {
+        long nextAllowedWriteTicks = 0;
         while (true)
         {
+            var now = Environment.TickCount64;
+            if (now < nextAllowedWriteTicks)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(nextAllowedWriteTicks - now)).ConfigureAwait(false);
+            }
+
             byte[]? packet;
             lock (_rumbleLock)
             {
@@ -151,6 +167,9 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
                 await WriteAsync(VibrationUuid, packet, cts.Token).ConfigureAwait(false);
+                Interlocked.Increment(ref _rumbleWriteCount);
+                nextAllowedWriteTicks = Environment.TickCount64 + RumbleMinIntervalMs;
+                ReportStatsIfDue();
             }
             catch (Exception ex)
             {
@@ -296,6 +315,8 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
         try
         {
             var data = ReadBytes(args.CharacteristicValue);
+            Interlocked.Increment(ref _inputReportCount);
+            ReportStatsIfDue();
             var state = NS2ProProtocol.ParseCommonReport(data, _primaryStick, _secondaryStick);
             InputReceived?.Invoke(state);
         }
@@ -315,4 +336,33 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
 
     private static TaskCompletionSource<byte[]> NewResponseSource() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private void ReportStatsIfDue()
+    {
+        if (!logger.IsEnabled(LogLevel.Debug))
+        {
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        var last = Interlocked.Read(ref _lastStatsTicks);
+        if (now - last < StatsIntervalMs || Interlocked.CompareExchange(ref _lastStatsTicks, now, last) != last)
+        {
+            return;
+        }
+
+        var elapsedSeconds = Math.Max((now - last) / 1000.0, 0.001);
+        var inputReports = Interlocked.Exchange(ref _inputReportCount, 0);
+        var rumbleRequests = Interlocked.Exchange(ref _rumbleRequestCount, 0);
+        var rumbleWrites = Interlocked.Exchange(ref _rumbleWriteCount, 0);
+        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: false);
+        var previousAllocatedBytes = Interlocked.Exchange(ref _lastAllocatedBytes, allocatedBytes);
+        var allocatedPerSecond = (allocatedBytes - previousAllocatedBytes) / elapsedSeconds;
+
+        logger.Debug(
+            $"BLE stats: input={inputReports / elapsedSeconds:F1}Hz, " +
+            $"rumble-request={rumbleRequests / elapsedSeconds:F1}Hz, " +
+            $"rumble-write={rumbleWrites / elapsedSeconds:F1}Hz, " +
+            $"alloc={allocatedPerSecond / 1024.0:F1}KiB/s");
+    }
 }

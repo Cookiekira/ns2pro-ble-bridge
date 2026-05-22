@@ -2,6 +2,8 @@ namespace Ns2Pro.BleBridge;
 
 internal sealed class Logger(LogLevel minimum)
 {
+    public bool IsEnabled(LogLevel level) => level >= minimum;
+
     public void Trace(string message) => Write(LogLevel.Trace, message);
     public void Debug(string message) => Write(LogLevel.Debug, message);
     public void Info(string message) => Write(LogLevel.Info, message);
@@ -12,7 +14,7 @@ internal sealed class Logger(LogLevel minimum)
 
     private void Write(LogLevel level, string message)
     {
-        if (level < minimum)
+        if (!IsEnabled(level))
         {
             return;
         }

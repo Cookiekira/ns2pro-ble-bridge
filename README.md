@@ -1,37 +1,52 @@
 # NS2Pro BLE Bridge
 
-NativeAOT Windows CLI that bridges a real Switch 2 Pro Controller over BLE into a virtual USB NS2Pro device through an embedded `libVIIPER.dll`.
+Windows CLI for bridging a Switch 2 Pro Controller over BLE to a virtual USB NS2Pro device.
+
+## Requirements
+
+- Windows x64
+- .NET SDK with `net10.0-windows` support
+- Go toolchain
+- VIIPER source checkout
 
 ## Build
 
-```powershell
-cd C:\Users\oddc2\Repo\VIIPER
-set CGO_ENABLED=1
-go build -buildmode=c-shared -o dist\libVIIPER\libVIIPER.dll .\lib\viiper
+Set the path to the VIIPER source checkout, then publish the bridge:
 
-cd C:\Users\oddc2\Repo\ns2pro-ble-bridge
+```powershell
+$env:VIIPER_SOURCE_ROOT = "C:\path\to\VIIPER"
 dotnet publish .\Ns2Pro.BleBridge.csproj -c Release -r win-x64
 ```
 
-The project embeds `..\VIIPER\dist\libVIIPER\libVIIPER.dll` into the NativeAOT executable. At runtime it extracts the DLL into `%LOCALAPPDATA%\Ns2Pro.BleBridge\native\<hash>\` and loads it from there.
-
-## Run
+You can also pass the VIIPER path as an MSBuild property:
 
 ```powershell
-.\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\Ns2Pro.BleBridge.exe
+dotnet publish .\Ns2Pro.BleBridge.csproj -c Release -r win-x64 /p:ViiperSourceRoot=C:\path\to\VIIPER
 ```
 
-Useful flags:
+The build compiles `lib\viiper` as `libVIIPER.dll` and embeds it in the published executable.
 
-```text
---usb-addr localhost:3241
---device-address AA:BB:CC:DD:EE:FF
---pair-host --host-address AA:BB:CC:DD:EE:FF
---forget-device
---cache-file path\to\ns2pro_ble_device.json
---no-auto-attach
---feature-flags 0x07
---log-level debug
+## Usage
+
+```powershell
+.\bin\Release\net10.0-windows\win-x64\publish\Ns2Pro.BleBridge.exe
 ```
 
-Startup order intentionally creates and auto-attaches the virtual USB NS2Pro before scanning or connecting to the BLE controller, so Steam sees the NS2Pro identity first.
+Options:
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--usb-addr <addr>` | USB server address | `localhost:3241` |
+| `--device-address <mac>` | Target BLE controller address | Cached controller |
+| `--pair-host` | Pair the BLE controller to the host | Disabled |
+| `--host-address <mac>` | Host Bluetooth address for pairing | Required with `--pair-host` |
+| `--forget-device` | Clear the cached BLE controller address | Disabled |
+| `--cache-file <path>` | Controller cache path | `%LOCALAPPDATA%\Ns2Pro.BleBridge\controller-cache.json` |
+| `--no-auto-attach` | Do not automatically attach to the local USB bus | Disabled |
+| `--feature-flags <flags>` | Feature flags to enable | `0x07` |
+| `--log-level <level>` | Log level: `Trace`, `Debug`, `Info`, `Warn`, `Error` | `Info` |
+| `-h`, `--help` | Show help | |
+
+## License
+
+Licensed under GPL-3.0-or-later. See [LICENSE.txt](LICENSE.txt).

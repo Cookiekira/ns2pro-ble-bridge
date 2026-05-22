@@ -78,7 +78,7 @@ internal sealed record CliOptions(
         Console.WriteLine("  --pair-host              Pair the BLE controller to the host");
         Console.WriteLine("  --host-address <mac>     Host Bluetooth address (required for pairing)");
         Console.WriteLine("  --forget-device          Clear the cached BLE controller address");
-        Console.WriteLine("  --cache-file <path>      Path to cache file (default: ~/.viiper/ns2pro_ble_device.json)");
+        Console.WriteLine($"  --cache-file <path>      Path to cache file (default: {DefaultCacheFile()})");
         Console.WriteLine("  --no-auto-attach         Do not automatically attach to local USB bus");
         Console.WriteLine("  --feature-flags <flags>  Feature flags to enable (default: 0x07)");
         Console.WriteLine("  --log-level <level>      Log level: Trace, Debug, Info, Warn, Error (default: Info)");
@@ -99,10 +99,10 @@ internal sealed record CliOptions(
             ? Convert.ToByte(text[2..], 16)
             : Convert.ToByte(text, 10);
 
-    private static string DefaultCacheFile()
+    public static string DefaultCacheFile()
     {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return Path.Combine(home, ".viiper", "ns2pro_ble_device.json");
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return Path.Combine(localAppData, "Ns2Pro.BleBridge", "controller-cache.json");
     }
 }
 

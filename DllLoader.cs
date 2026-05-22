@@ -30,7 +30,9 @@ internal static class DllLoader
     private static string ExtractEmbeddedDll(Assembly assembly)
     {
         using var stream = assembly.GetManifestResourceStream(ResourceName)
-            ?? throw new DllNotFoundException($"{ResourceName} is not embedded. Build libVIIPER.dll in ..\\VIIPER\\dist\\libVIIPER before publishing.");
+            ?? throw new DllNotFoundException(
+                $"{ResourceName} is not embedded. Build with /p:ViiperSourceRoot=<path-to-VIIPER> " +
+                "or set VIIPER_SOURCE_ROOT.");
 
         using var sha = SHA256.Create();
         using var memory = new MemoryStream();

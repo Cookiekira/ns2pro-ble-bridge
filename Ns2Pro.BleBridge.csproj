@@ -1,7 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetPlatformIdentifier>Windows</TargetPlatformIdentifier>
+    <TargetPlatformVersion>10.0.26100.0</TargetPlatformVersion>
+    <TargetPlatformMoniker>Windows,Version=10.0.26100.0</TargetPlatformMoniker>
+    <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -13,10 +17,34 @@
     <OptimizationPreference>Speed</OptimizationPreference>
     <AssemblyName>Ns2Pro.BleBridge</AssemblyName>
     <RootNamespace>Ns2Pro.BleBridge</RootNamespace>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+    <ViiperSourceRoot Condition="'$(ViiperSourceRoot)' == '' and '$(VIIPER_SOURCE_ROOT)' != ''">$(VIIPER_SOURCE_ROOT)</ViiperSourceRoot>
+    <ViiperNativeOutputDir>$(BaseIntermediateOutputPath)$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\viiper-native\</ViiperNativeOutputDir>
+    <BuiltViiperLibrary>$(ViiperNativeOutputDir)libVIIPER.dll</BuiltViiperLibrary>
   </PropertyGroup>
 
-  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)\..\VIIPER\dist\libVIIPER\libVIIPER.dll')">
-    <EmbeddedResource Include="$(MSBuildProjectDirectory)\..\VIIPER\dist\libVIIPER\libVIIPER.dll"
+  <Target Name="BuildViiperLibrary" BeforeTargets="AssignTargetPaths">
+    <Error Condition="'$(ViiperSourceRoot)' == ''"
+           Text="ViiperSourceRoot is required. Set VIIPER_SOURCE_ROOT or build with /p:ViiperSourceRoot=&lt;path-to-VIIPER&gt;." />
+    <Error Condition="!Exists('$(ViiperSourceRoot)\go.mod')"
+           Text="ViiperSourceRoot must point to a VIIPER checkout containing go.mod: $(ViiperSourceRoot)" />
+    <Error Condition="!Exists('$(ViiperSourceRoot)\lib\viiper')"
+           Text="ViiperSourceRoot must contain lib\viiper: $(ViiperSourceRoot)" />
+    <MakeDir Directories="$(ViiperNativeOutputDir)" />
+    <Exec Command="go version"
+          IgnoreExitCode="true"
+          ConsoleToMSBuild="true">
+      <Output TaskParameter="ExitCode" PropertyName="GoVersionExitCode" />
+    </Exec>
+    <Error Condition="'$(GoVersionExitCode)' != '0'"
+           Text="Go is required to build libVIIPER.dll. Install Go and ensure go.exe is available to MSBuild." />
+    <Exec WorkingDirectory="$(ViiperSourceRoot)"
+          EnvironmentVariables="CGO_ENABLED=1"
+          Command="go build -buildmode=c-shared -trimpath -o &quot;$(MSBuildProjectDirectory)\$(BuiltViiperLibrary)&quot; ./lib/viiper" />
+  </Target>
+
+  <ItemGroup>
+    <EmbeddedResource Include="$(BuiltViiperLibrary)"
                       LogicalName="Ns2Pro.BleBridge.Native.libVIIPER.dll" />
   </ItemGroup>
 </Project>
