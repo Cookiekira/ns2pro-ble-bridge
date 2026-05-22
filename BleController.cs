@@ -18,6 +18,10 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
     private BluetoothLEDevice? _device;
     private BluetoothLEPreferredConnectionParametersRequest? _connectionRequest;
     private readonly Dictionary<Guid, GattCharacteristic> _characteristics = [];
+    private readonly SemaphoreSlim _commandSemaphore = new(1, 1);
+    private readonly object _rumbleLock = new();
+    private byte[]? _pendingRumble;
+    private bool _rumbleWriteInProgress;
     private StickCalibration? _primaryStick;
     private StickCalibration? _secondaryStick;
     private TaskCompletionSource<byte[]> _nextCommandResponse = NewResponseSource();
@@ -75,19 +79,41 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
 
     public async Task<byte[]> SendCommandAsync(byte[] command, CancellationToken ct)
     {
-        _nextCommandResponse = NewResponseSource();
-        await WriteAsync(CommandUuid, command, ct).ConfigureAwait(false);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
-        await using var _ = linked.Token.Register(static state => ((TaskCompletionSource<byte[]>)state!).TrySetCanceled(), _nextCommandResponse);
-        return await _nextCommandResponse.Task.ConfigureAwait(false);
+        await _commandSemaphore.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var responseSource = NewResponseSource();
+            _nextCommandResponse = responseSource;
+            await WriteAsync(CommandUuid, command, ct).ConfigureAwait(false);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+            await using var _ = linked.Token.Register(static state => ((TaskCompletionSource<byte[]>)state!).TrySetCanceled(), responseSource);
+            return await responseSource.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            _commandSemaphore.Release();
+        }
     }
 
     public Task SetPlayerLedsAsync(byte mask, CancellationToken ct) =>
         SendCommandAsync(NS2ProProtocol.BuildLedCommand(mask), ct);
 
-    public Task SendRumbleAsync(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right, CancellationToken ct) =>
-        WriteAsync(VibrationUuid, NS2ProProtocol.BuildRumblePacket(left, right), ct);
+    public void SendRumble(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
+    {
+        var packet = NS2ProProtocol.BuildRumblePacket(left, right);
+        lock (_rumbleLock)
+        {
+            _pendingRumble = packet;
+            if (_rumbleWriteInProgress)
+            {
+                return;
+            }
+            _rumbleWriteInProgress = true;
+        }
+
+        _ = Task.Run(ProcessRumbleLoopAsync);
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -102,6 +128,35 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
             _connectionRequest = null;
         }
         _device?.Dispose();
+        _commandSemaphore.Dispose();
+    }
+
+    private async Task ProcessRumbleLoopAsync()
+    {
+        while (true)
+        {
+            byte[]? packet;
+            lock (_rumbleLock)
+            {
+                packet = _pendingRumble;
+                _pendingRumble = null;
+                if (packet is null)
+                {
+                    _rumbleWriteInProgress = false;
+                    break;
+                }
+            }
+
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+                await WriteAsync(VibrationUuid, packet, cts.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.Debug($"Rumble write failed: {ex.Message}");
+            }
+        }
     }
 
     private async Task DiscoverAsync(CancellationToken ct)

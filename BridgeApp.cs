@@ -43,8 +43,6 @@ internal sealed class BridgeApp : IDisposable
                 _logger.Info($"Connecting BLE controller {BluetoothAddress.Format(address)}.");
 
                 await using var controller = new BleController(_logger, _options.FeatureFlags);
-                s_activeController = controller;
-                controller.InputReceived += _server.Update;
                 await controller.ConnectAndInitializeAsync(address, _stop.Token).ConfigureAwait(false);
                 BluetoothAddress.SaveCached(_options.CacheFile, address);
 
@@ -54,11 +52,14 @@ internal sealed class BridgeApp : IDisposable
                     _logger.Info("pair-host completed.");
                 }
 
+                controller.InputReceived += _server.Update;
+                s_activeController = controller;
                 _logger.Info("BLE controller initialized.");
                 await Task.Delay(Timeout.InfiniteTimeSpan, _stop.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_stop.IsCancellationRequested)
             {
+                s_activeController = null;
                 break;
             }
             catch (Exception ex)
@@ -117,7 +118,7 @@ internal sealed class BridgeApp : IDisposable
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             if ((flags & NS2ProProtocol.OutputFlagRumble) != 0)
             {
-                await controller.SendRumbleAsync(left, right, cts.Token).ConfigureAwait(false);
+                controller.SendRumble(left, right);
             }
             if ((flags & NS2ProProtocol.OutputFlagLed) != 0)
             {

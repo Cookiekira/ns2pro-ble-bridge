@@ -11,8 +11,14 @@ internal sealed record CliOptions(
     byte FeatureFlags,
     LogLevel LogLevel)
 {
-    public static CliOptions Parse(string[] args)
+    public static CliOptions? Parse(string[] args)
     {
+        if (args.Any(arg => arg is "--help" or "-h" or "/?"))
+        {
+            PrintUsage();
+            return null;
+        }
+
         var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < args.Length; i++)
         {
@@ -60,6 +66,23 @@ internal sealed record CliOptions(
             NoAutoAttach: GetBool(values, "--no-auto-attach"),
             FeatureFlags: ParseByte(Get(values, "--feature-flags", "0x07")!),
             LogLevel: Enum.TryParse<LogLevel>(Get(values, "--log-level", "info"), true, out var level) ? level : LogLevel.Info);
+    }
+
+    public static void PrintUsage()
+    {
+        Console.WriteLine("Usage: Ns2Pro.BleBridge [options]");
+        Console.WriteLine();
+        Console.WriteLine("Options:");
+        Console.WriteLine("  --usb-addr <addr>        USB server address (default: localhost:3241)");
+        Console.WriteLine("  --device-address <mac>   Address of the target BLE controller");
+        Console.WriteLine("  --pair-host              Pair the BLE controller to the host");
+        Console.WriteLine("  --host-address <mac>     Host Bluetooth address (required for pairing)");
+        Console.WriteLine("  --forget-device          Clear the cached BLE controller address");
+        Console.WriteLine("  --cache-file <path>      Path to cache file (default: ~/.viiper/ns2pro_ble_device.json)");
+        Console.WriteLine("  --no-auto-attach         Do not automatically attach to local USB bus");
+        Console.WriteLine("  --feature-flags <flags>  Feature flags to enable (default: 0x07)");
+        Console.WriteLine("  --log-level <level>      Log level: Trace, Debug, Info, Warn, Error (default: Info)");
+        Console.WriteLine("  -h, --help               Show this help information");
     }
 
     private static string? Get(Dictionary<string, string?> values, string key, string? defaultValue) =>

@@ -200,14 +200,20 @@ internal static class NS2ProProtocol
 
     public static async Task PairHostAsync(BleController controller, ulong hostAddress, CancellationToken ct)
     {
-        var primary = BluetoothAddress.Bytes(hostAddress);
-        var secondary = primary.ToArray();
-        secondary[5]--;
+        if (hostAddress == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(hostAddress), "Host Bluetooth address cannot be zero.");
+        }
+
+        var secondary = hostAddress - 1;
         var payload = new byte[14];
         payload[0] = 0x00;
         payload[1] = 0x02;
-        primary.AsSpan().ReverseCopyTo(payload.AsSpan(2, 6));
-        secondary.AsSpan().ReverseCopyTo(payload.AsSpan(8, 6));
+        for (var i = 0; i < 6; i++)
+        {
+            payload[2 + i] = (byte)(hostAddress >> (8 * i));
+            payload[8 + i] = (byte)(secondary >> (8 * i));
+        }
 
         var data = ResponsePayload(await controller.SendCommandAsync(Command(0x15, 0x01, payload), ct), 0x15, 0x01);
         if (data.Length < 9 || data[0] != 1)
