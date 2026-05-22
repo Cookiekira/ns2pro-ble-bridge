@@ -1,0 +1,7 @@
+bin/
+obj/
+*.pdb
+*.user
+.vs/
+.idea/
+*.log
