@@ -46,10 +46,17 @@ internal static class BluetoothAddress
         {
             return null;
         }
-        using var doc = JsonDocument.Parse(File.ReadAllBytes(path));
-        return doc.RootElement.TryGetProperty("address", out var address)
-            ? Parse(address.GetString() ?? "")
-            : null;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllBytes(path));
+            return doc.RootElement.TryGetProperty("address", out var address)
+                ? Parse(address.GetString() ?? "")
+                : null;
+        }
+        catch (Exception ex) when (ex is JsonException or FormatException or OverflowException or IOException)
+        {
+            return null;
+        }
     }
 
     public static void SaveCached(string path, ulong address)

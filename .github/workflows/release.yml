@@ -38,17 +38,15 @@ jobs:
 
       - name: Publish
         shell: pwsh
-        run: >
-          dotnet publish src\Ns2Pro.BleBridge.csproj
-          -c Release
-          -r win-x64
-          -p:ViiperSourceRoot="$env:GITHUB_WORKSPACE\viiper"
-          -p:ContinuousIntegrationBuild=true
+        run: |
+          $publishDir = Join-Path $env:GITHUB_WORKSPACE "publish-output"
+          New-Item -ItemType Directory -Force $publishDir | Out-Null
+          dotnet publish src\Ns2Pro.BleBridge.csproj -c Release -r win-x64 "-p:ViiperSourceRoot=$env:GITHUB_WORKSPACE\viiper" -p:ContinuousIntegrationBuild=true "-p:PublishDir=$publishDir\"
 
       - name: Prepare artifact
         shell: pwsh
         run: |
-          $publishExe = "src\bin\Release\net10.0-windows\win-x64\publish\Ns2Pro.BleBridge.exe"
+          $publishExe = "publish-output\Ns2Pro.BleBridge.exe"
           $artifactExe = "artifacts\Ns2Pro.BleBridge-${{ github.ref_name }}-win-x64.exe"
 
           if (-not (Test-Path $publishExe)) {

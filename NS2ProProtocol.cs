@@ -242,13 +242,15 @@ internal static class NS2ProProtocol
         }
 
         var reversedLtk = new byte[16];
-        ltk.AsSpan().ReverseCopyTo(reversedLtk);
+        WriteReversed(ltk, reversedLtk);
         using var aes = Aes.Create();
         aes.Mode = CipherMode.ECB;
         aes.Padding = PaddingMode.None;
         aes.Key = reversedLtk;
         using var encryptor = aes.CreateEncryptor();
-        var expected = encryptor.TransformFinalBlock(challenge.Reversed().ToArray(), 0, 16);
+        var reversedChallenge = new byte[16];
+        WriteReversed(challenge, reversedChallenge);
+        var expected = encryptor.TransformFinalBlock(reversedChallenge, 0, reversedChallenge.Length);
         if (!data[1..17].SequenceEqual(expected))
         {
             throw new InvalidDataException("Controller LTK confirmation response did not match.");
@@ -325,17 +327,12 @@ internal static class NS2ProProtocol
         if ((raw[3] & 0x10) != 0) b |= (uint)NS2ProButtons.Headset;
         return b;
     }
-}
 
-internal static class SpanExtensions
-{
-    public static void ReverseCopyTo<T>(this ReadOnlySpan<T> source, Span<T> destination)
+    private static void WriteReversed(ReadOnlySpan<byte> source, Span<byte> destination)
     {
         for (var i = 0; i < source.Length; i++)
         {
             destination[i] = source[source.Length - 1 - i];
         }
     }
-
-    public static IEnumerable<T> Reversed<T>(this IEnumerable<T> source) => source.Reverse();
 }

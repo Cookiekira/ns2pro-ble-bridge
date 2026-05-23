@@ -3,7 +3,7 @@ namespace Ns2Pro.BleBridge;
 internal sealed record CliOptions(
     string UsbAddr,
     string? DeviceAddress,
-    bool PairHost,
+    bool PairKnownDevice,
     ulong? HostAddress,
     bool ForgetDevice,
     string CacheFile,
@@ -48,18 +48,13 @@ internal sealed record CliOptions(
             values[arg] = args[++i];
         }
 
-        var pairHost = GetBool(values, "--pair-host");
         var hostAddressText = Get(values, "--host-address", null);
         ulong? hostAddress = hostAddressText is null ? null : BluetoothAddress.Parse(hostAddressText);
-        if (pairHost && hostAddress is null)
-        {
-            throw new ArgumentException("--host-address is required with --pair-host");
-        }
 
         return new CliOptions(
             UsbAddr: Get(values, "--usb-addr", "localhost:3241")!,
             DeviceAddress: Get(values, "--device-address", null),
-            PairHost: pairHost,
+            PairKnownDevice: GetBool(values, "--pair-host"),
             HostAddress: hostAddress,
             ForgetDevice: GetBool(values, "--forget-device"),
             CacheFile: Get(values, "--cache-file", DefaultCacheFile()) ?? DefaultCacheFile(),
@@ -74,9 +69,9 @@ internal sealed record CliOptions(
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine("  --usb-addr <addr>        USB server address (default: localhost:3241)");
-        Console.WriteLine("  --device-address <mac>   Address of the target BLE controller");
-        Console.WriteLine("  --pair-host              Pair the BLE controller to the host");
-        Console.WriteLine("  --host-address <mac>     Host Bluetooth address (required for pairing)");
+        Console.WriteLine("  --device-address <mac>   Connect to a specific BLE controller (debug override)");
+        Console.WriteLine("  --pair-host              Pair a cached or explicit controller again");
+        Console.WriteLine("  --host-address <mac>     Override local Bluetooth adapter address for host pairing");
         Console.WriteLine("  --forget-device          Clear the cached BLE controller address");
         Console.WriteLine($"  --cache-file <path>      Path to cache file (default: {DefaultCacheFile()})");
         Console.WriteLine("  --no-auto-attach         Do not automatically attach to local USB bus");

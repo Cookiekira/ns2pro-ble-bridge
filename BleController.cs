@@ -47,11 +47,14 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
 
         watcher.Received += (_, e) =>
         {
-            var name = e.Advertisement.LocalName;
-            if (!name.Contains("Switch 2 Pro", StringComparison.OrdinalIgnoreCase))
+            if (!Switch2ProAdvertisement.TryParse(e.Advertisement, out var advertisement))
             {
                 return;
             }
+
+            var name = string.IsNullOrWhiteSpace(e.Advertisement.LocalName)
+                ? $"Switch 2 Pro Controller ({advertisement.ModeName})"
+                : e.Advertisement.LocalName;
             found.TrySetResult((e.BluetoothAddress, name));
         };
 

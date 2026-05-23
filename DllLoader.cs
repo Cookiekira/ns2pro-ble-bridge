@@ -49,7 +49,19 @@ internal static class DllLoader
         var path = Path.Combine(dir, "libVIIPER.dll");
         if (!File.Exists(path) || new FileInfo(path).Length != bytes.Length)
         {
-            File.WriteAllBytes(path, bytes);
+            var tempPath = Path.Combine(dir, $"{Guid.NewGuid():N}.tmp");
+            try
+            {
+                File.WriteAllBytes(tempPath, bytes);
+                File.Move(tempPath, path, overwrite: true);
+            }
+            finally
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
         }
         return path;
     }
