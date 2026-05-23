@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 
 namespace Ns2Pro.BleBridge;
@@ -80,6 +81,8 @@ internal static unsafe partial class NativeViiper
 
 internal sealed unsafe class ViiperServer : IDisposable
 {
+    private static readonly ConcurrentDictionary<nuint, IControllerOutputTarget> s_outputTargets = [];
+
     private readonly Logger _logger;
     private nuint _server;
     private nuint _device;
@@ -89,6 +92,22 @@ internal sealed unsafe class ViiperServer : IDisposable
     public ViiperServer(Logger logger) => _logger = logger;
 
     public nuint DeviceHandle => _device;
+
+    public void SetOutputTarget(IControllerOutputTarget? target)
+    {
+        if (_device == 0)
+        {
+            return;
+        }
+
+        if (target is null)
+        {
+            s_outputTargets.TryRemove(_device, out _);
+            return;
+        }
+
+        s_outputTargets[_device] = target;
+    }
 
     public void Start(string usbAddr, bool autoAttach)
     {
@@ -128,7 +147,7 @@ internal sealed unsafe class ViiperServer : IDisposable
         }
         _device = device;
 
-        if (!NativeViiper.SetNS2ProOutputCallback(_device, &BridgeApp.OnNativeOutput))
+        if (!NativeViiper.SetNS2ProOutputCallback(_device, &OnNativeOutput))
         {
             throw new InvalidOperationException("SetNS2ProOutputCallback failed");
         }
@@ -154,6 +173,7 @@ internal sealed unsafe class ViiperServer : IDisposable
 
         if (_device != 0)
         {
+            SetOutputTarget(null);
             _ = NativeViiper.SetNS2ProOutputCallback(_device, null);
             _ = NativeViiper.RemoveNS2ProDevice(_device);
             _device = 0;
@@ -167,6 +187,27 @@ internal sealed unsafe class ViiperServer : IDisposable
         {
             _ = NativeViiper.CloseUSBServer(_server);
             _server = 0;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeOutput(nuint handle, byte* leftRumble, byte* rightRumble, byte flags, byte playerLedMask)
+    {
+        if (!s_outputTargets.TryGetValue(handle, out var target))
+        {
+            return;
+        }
+
+        if ((flags & NS2ProProtocol.OutputFlagRumble) != 0)
+        {
+            target.SendRumble(
+                new ReadOnlySpan<byte>(leftRumble, 16),
+                new ReadOnlySpan<byte>(rightRumble, 16));
+        }
+
+        if ((flags & NS2ProProtocol.OutputFlagLed) != 0)
+        {
+            _ = Task.Run(() => NativeOutputRunner.RunLedOutputAsync(target, playerLedMask));
         }
     }
 
