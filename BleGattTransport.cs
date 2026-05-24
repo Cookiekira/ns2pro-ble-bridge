@@ -137,16 +137,8 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) 
 
     private void OnCommandResponse(GattCharacteristic sender, GattValueChangedEventArgs args)
     {
-        var data = ReadBytes(args.CharacteristicValue);
+        var data = BufferReader.ReadBytes(args.CharacteristicValue);
         _nextCommandResponse.TrySetResult(data);
-    }
-
-    private static byte[] ReadBytes(IBuffer buffer)
-    {
-        using var reader = DataReader.FromBuffer(buffer);
-        var data = new byte[reader.UnconsumedBufferLength];
-        reader.ReadBytes(data);
-        return data;
     }
 
     private static TaskCompletionSource<byte[]> NewResponseSource() =>

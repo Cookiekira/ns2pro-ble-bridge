@@ -2,7 +2,6 @@ using System.Buffers.Binary;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
-using Windows.Storage.Streams;
 
 namespace Ns2Pro.BleBridge;
 
@@ -221,7 +220,7 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
     {
         try
         {
-            var data = ReadBytes(args.CharacteristicValue);
+            var data = BufferReader.ReadBytes(args.CharacteristicValue);
             Interlocked.Increment(ref _inputReportCount);
             ReportStatsIfDue();
             var state = NS2ProProtocol.ParseCommonReport(data, _primaryStick, _secondaryStick);
@@ -231,14 +230,6 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
         {
             logger.Debug($"Failed to parse BLE input report: {ex.Message}");
         }
-    }
-
-    private static byte[] ReadBytes(IBuffer buffer)
-    {
-        using var reader = DataReader.FromBuffer(buffer);
-        var data = new byte[reader.UnconsumedBufferLength];
-        reader.ReadBytes(data);
-        return data;
     }
 
     private void ReportStatsIfDue()

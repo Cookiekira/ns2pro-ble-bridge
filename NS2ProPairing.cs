@@ -83,9 +83,7 @@ internal static class NS2ProPairing
 
     private static void WriteReversed(ReadOnlySpan<byte> source, Span<byte> destination)
     {
-        for (var i = 0; i < source.Length; i++)
-        {
-            destination[i] = source[source.Length - 1 - i];
-        }
+        source.CopyTo(destination);
+        destination.Reverse();
     }
 }
