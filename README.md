@@ -44,7 +44,8 @@ Options:
 
 Build requirements:
 
-- .NET SDK with `net10.0-windows` support
+- .NET10 SDK
+- Windows SDK `10.0.26100.0`
 - Go toolchain
 - VIIPER submodule initialized
 
