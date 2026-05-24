@@ -6,20 +6,20 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefaultItemExcludes>$(DefaultItemExcludes);vendor\**</DefaultItemExcludes>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
     <TrimMode>full</TrimMode>
     <OptimizationPreference>Speed</OptimizationPreference>
     <ViiperSourceRoot Condition="'$(ViiperSourceRoot)' == '' and '$(VIIPER_SOURCE_ROOT)' != ''">$(VIIPER_SOURCE_ROOT)</ViiperSourceRoot>
+    <ViiperSourceRoot Condition="'$(ViiperSourceRoot)' == ''">$(MSBuildProjectDirectory)\vendor\VIIPER</ViiperSourceRoot>
     <ViiperNativeOutputDir>$(BaseIntermediateOutputPath)$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\viiper-native\</ViiperNativeOutputDir>
     <BuiltViiperLibrary>$(ViiperNativeOutputDir)libVIIPER.dll</BuiltViiperLibrary>
   </PropertyGroup>
 
   <Target Name="BuildViiperLibrary" BeforeTargets="AssignTargetPaths">
-    <Error Condition="'$(ViiperSourceRoot)' == ''"
-           Text="ViiperSourceRoot is required. Set VIIPER_SOURCE_ROOT or build with /p:ViiperSourceRoot=&lt;path-to-VIIPER&gt;." />
     <Error Condition="!Exists('$(ViiperSourceRoot)\go.mod')"
-           Text="ViiperSourceRoot must point to a VIIPER checkout containing go.mod: $(ViiperSourceRoot)" />
+           Text="VIIPER source was not found at $(ViiperSourceRoot). Run 'git submodule update --init --recursive' or set VIIPER_SOURCE_ROOT /p:ViiperSourceRoot=&lt;path-to-VIIPER&gt;." />
     <Error Condition="!Exists('$(ViiperSourceRoot)\lib\viiper')"
            Text="ViiperSourceRoot must contain lib\viiper: $(ViiperSourceRoot)" />
     <MakeDir Directories="$(ViiperNativeOutputDir)" />

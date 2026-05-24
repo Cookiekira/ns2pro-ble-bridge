@@ -46,18 +46,30 @@ Build requirements:
 
 - .NET SDK with `net10.0-windows` support
 - Go toolchain
-- VIIPER source checkout
+- VIIPER submodule initialized
 
-Set the path to the VIIPER source checkout, then publish the bridge:
+Clone the repository with submodules, then publish the bridge:
+
+```powershell
+git clone --recurse-submodules https://github.com/Cookiekira/ns2pro-ble-bridge.git
+cd ns2pro-ble-bridge
+dotnet publish .\Ns2Pro.BleBridge.csproj -c Release -r win-x64
+```
+
+If you already cloned the repository without submodules, initialize VIIPER before
+building:
+
+```powershell
+git submodule update --init --recursive
+```
+
+By default, the build uses `vendor\VIIPER`. To build against a different VIIPER
+checkout, set `VIIPER_SOURCE_ROOT` or pass the path as an MSBuild property:
 
 ```powershell
 $env:VIIPER_SOURCE_ROOT = "C:\path\to\VIIPER"
 dotnet publish .\Ns2Pro.BleBridge.csproj -c Release -r win-x64
-```
 
-You can also pass the VIIPER path as an MSBuild property:
-
-```powershell
 dotnet publish .\Ns2Pro.BleBridge.csproj -c Release -r win-x64 /p:ViiperSourceRoot=C:\path\to\VIIPER
 ```
 
