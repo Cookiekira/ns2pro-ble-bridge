@@ -34,17 +34,24 @@ internal sealed class BridgeApp : IDisposable
             try
             {
                 await using var session = await _controllerSessions.ConnectAsync(_stop.Token).ConfigureAwait(false);
+                var disconnected = false;
                 try
                 {
                     session.Controller.InputReceived += _server.Update;
                     _server.SetOutputTarget(session.Controller);
                     _logger.Info("BLE controller initialized.");
-                    await Task.Delay(Timeout.InfiniteTimeSpan, _stop.Token).ConfigureAwait(false);
+                    await session.WaitForDisconnectAsync(_stop.Token).ConfigureAwait(false);
+                    disconnected = true;
+                    _logger.Warn($"BLE controller {BluetoothAddress.Format(session.Address)} disconnected; reconnecting.");
                 }
                 finally
                 {
                     _server.SetOutputTarget(null);
                     session.Controller.InputReceived -= _server.Update;
+                }
+                if (disconnected)
+                {
+                    await DelayBeforeReconnectAsync().ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (_stop.IsCancellationRequested)
@@ -81,5 +88,16 @@ internal sealed class BridgeApp : IDisposable
     {
         e.Cancel = true;
         _stop.Cancel();
+    }
+
+    private async Task DelayBeforeReconnectAsync()
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1), _stop.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 }

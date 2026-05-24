@@ -10,6 +10,7 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
     private const int RumbleMinIntervalMs = 20;
     private const int StatsIntervalMs = 5_000;
 
+    private readonly TaskCompletionSource _disconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private BluetoothLEDevice? _device;
     private BleGattTransport? _transport;
     private readonly object _rumbleLock = new();
@@ -24,6 +25,8 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
     private long _lastAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false);
 
     public event Action<NS2ProInputState>? InputReceived;
+
+    public Task Disconnected => _disconnected.Task;
 
     public static async Task<(ulong Address, string Name)> ScanAsync(Logger logger, CancellationToken ct)
     {
@@ -64,8 +67,13 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
     {
         _device = await BluetoothLEDevice.FromBluetoothAddressAsync(address).AsTask(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Could not connect to BLE device {BluetoothAddress.Format(address)}.");
+        _device.ConnectionStatusChanged += OnConnectionStatusChanged;
+        if (_device.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
+        {
+            MarkDisconnected("BLE device reported disconnected immediately after connect.");
+        }
 
-        _transport = new BleGattTransport(_device, logger);
+        _transport = new BleGattTransport(_device, logger, MarkDisconnected);
         _transport.RequestThroughputOptimized();
         await _transport.DiscoverAsync(ct).ConfigureAwait(false);
 
@@ -110,7 +118,13 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
             await _transport.DisposeAsync().ConfigureAwait(false);
             _transport = null;
         }
+        if (_device is not null)
+        {
+            _device.ConnectionStatusChanged -= OnConnectionStatusChanged;
+        }
+        _disconnected.TrySetResult();
         _device?.Dispose();
+        _device = null;
     }
 
     private async Task ProcessRumbleLoopAsync()
@@ -152,6 +166,7 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
             catch (Exception ex)
             {
                 logger.Debug($"Rumble write failed: {ex.Message}");
+                MarkDisconnected($"Rumble write failed: {ex.Message}");
             }
         }
     }
@@ -229,6 +244,22 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
         catch (Exception ex)
         {
             logger.Debug($"Failed to parse BLE input report: {ex.Message}");
+        }
+    }
+
+    private void OnConnectionStatusChanged(BluetoothLEDevice sender, object args)
+    {
+        if (sender.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
+        {
+            MarkDisconnected("BLE device connection status changed to disconnected.");
+        }
+    }
+
+    private void MarkDisconnected(string reason)
+    {
+        if (_disconnected.TrySetResult())
+        {
+            logger.Warn(reason);
         }
     }
 

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Ns2Pro.BleBridge;
 
@@ -13,10 +14,8 @@ internal static class CachedControllerStore
 
         try
         {
-            using var doc = JsonDocument.Parse(File.ReadAllBytes(path));
-            return doc.RootElement.TryGetProperty("address", out var address)
-                ? BluetoothAddress.Parse(address.GetString() ?? "")
-                : null;
+            var cached = JsonSerializer.Deserialize(File.ReadAllBytes(path), SourceGenerationContext.Default.CachedDevice);
+            return cached is null ? null : BluetoothAddress.Parse(cached.Address);
         }
         catch (Exception ex) when (ex is JsonException or FormatException or OverflowException or IOException)
         {
@@ -46,4 +45,4 @@ internal static class CachedControllerStore
     }
 }
 
-internal sealed record CachedDevice(string Address);
+internal sealed record CachedDevice([property: JsonPropertyName("address")] string Address);

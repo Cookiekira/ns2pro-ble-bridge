@@ -6,5 +6,10 @@ internal sealed class ControllerSession(BleController controller, ulong address)
 
     public ulong Address { get; } = address;
 
+    public Task Disconnected => Controller.Disconnected;
+
+    public Task WaitForDisconnectAsync(CancellationToken ct) =>
+        Disconnected.WaitAsync(ct);
+
     public ValueTask DisposeAsync() => Controller.DisposeAsync();
 }
