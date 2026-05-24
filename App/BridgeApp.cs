@@ -6,14 +6,17 @@ internal sealed class BridgeApp : IDisposable
     private readonly Logger _logger;
     private readonly CancellationTokenSource _stop = new();
     private readonly ViiperServer _server;
-    private readonly ControllerSessionConnector _controllerSessions;
+    private readonly ControllerSessionRunner _controllerSessions;
 
     public BridgeApp(CliOptions options)
     {
         _options = options;
         _logger = new Logger(options.LogLevel);
         _server = new ViiperServer(_logger);
-        _controllerSessions = new ControllerSessionConnector(options, _logger);
+        _controllerSessions = new ControllerSessionRunner(
+            new ControllerSessionConnector(options, _logger),
+            _server,
+            _logger);
         Console.CancelKeyPress += OnCancelKeyPress;
     }
 
@@ -28,50 +31,7 @@ internal sealed class BridgeApp : IDisposable
 
         _server.Start(_options.UsbAddr, autoAttach: !_options.NoAutoAttach);
         _server.Update(NS2ProInputState.Default);
-
-        while (!_stop.IsCancellationRequested)
-        {
-            try
-            {
-                await using var session = await _controllerSessions.ConnectAsync(_stop.Token).ConfigureAwait(false);
-                var disconnected = false;
-                try
-                {
-                    session.Controller.InputReceived += _server.Update;
-                    _server.SetOutputTarget(session.Controller);
-                    _logger.Info("BLE controller initialized.");
-                    await session.WaitForDisconnectAsync(_stop.Token).ConfigureAwait(false);
-                    disconnected = true;
-                    _logger.Warn($"BLE controller {BluetoothAddress.Format(session.Address)} disconnected; reconnecting.");
-                }
-                finally
-                {
-                    _server.SetOutputTarget(null);
-                    session.Controller.InputReceived -= _server.Update;
-                }
-                if (disconnected)
-                {
-                    await DelayBeforeReconnectAsync().ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException) when (_stop.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "BLE bridge failed; retrying in 3s");
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(3), _stop.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-            }
-        }
-
+        await _controllerSessions.RunAsync(_stop.Token).ConfigureAwait(false);
         return 0;
     }
 
@@ -90,14 +50,4 @@ internal sealed class BridgeApp : IDisposable
         _stop.Cancel();
     }
 
-    private async Task DelayBeforeReconnectAsync()
-    {
-        try
-        {
-            await Task.Delay(TimeSpan.FromSeconds(1), _stop.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-    }
 }

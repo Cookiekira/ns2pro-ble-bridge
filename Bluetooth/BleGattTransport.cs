@@ -5,7 +5,7 @@ using Windows.Storage.Streams;
 
 namespace Ns2Pro.BleBridge;
 
-internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger, Action<string> disconnected) : IControllerCommandChannel, IAsyncDisposable
+internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) : IControllerCommandChannel, IAsyncDisposable
 {
     public static readonly Guid InitUuid = Guid.Parse("00c5af5d-1964-4e30-8f51-1956f96bd282");
     public static readonly Guid InputUuid = Guid.Parse("ab7de9be-89fe-49ad-828f-118f09df7fd2");
@@ -84,11 +84,6 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger, 
             await using var _ = linked.Token.Register(static state => ((TaskCompletionSource<byte[]>)state!).TrySetCanceled(), responseSource);
             return await responseSource.Task.ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            disconnected($"BLE command failed: {ex.Message}");
-            throw;
-        }
         finally
         {
             _commandSemaphore.Release();
@@ -102,18 +97,10 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger, 
     {
         using var writer = new DataWriter();
         writer.WriteBytes(data);
-        try
+        var status = await _characteristics[uuid].WriteValueAsync(writer.DetachBuffer(), GattWriteOption.WriteWithoutResponse).AsTask(ct).ConfigureAwait(false);
+        if (status != GattCommunicationStatus.Success)
         {
-            var status = await _characteristics[uuid].WriteValueAsync(writer.DetachBuffer(), GattWriteOption.WriteWithoutResponse).AsTask(ct).ConfigureAwait(false);
-            if (status != GattCommunicationStatus.Success)
-            {
-                throw new InvalidOperationException($"GATT write failed for {uuid}: {status}");
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            disconnected($"GATT write failed for {uuid}: {ex.Message}");
-            throw;
+            throw new InvalidOperationException($"GATT write failed for {uuid}: {status}");
         }
     }
 
@@ -147,12 +134,6 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger, 
             }
 
             _handlers.Add((uuid, handler));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            ch.ValueChanged -= handler;
-            disconnected($"GATT notification setup failed for {uuid}: {ex.Message}");
-            throw;
         }
         catch
         {

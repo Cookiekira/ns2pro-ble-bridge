@@ -68,7 +68,7 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
         _device = await BluetoothLEDevice.FromBluetoothAddressAsync(address).AsTask(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Could not connect to BLE device {BluetoothAddress.Format(address)}.");
 
-        _transport = new BleGattTransport(_device, logger, MarkDisconnected);
+        _transport = new BleGattTransport(_device, logger);
         _transport.RequestThroughputOptimized();
         await _transport.DiscoverAsync(ct).ConfigureAwait(false);
 
@@ -86,10 +86,23 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
         }
     }
 
-    public Task<byte[]> SendCommandAsync(byte[] command, CancellationToken ct) =>
-        _transport is { } transport
-            ? transport.SendCommandAsync(command, ct)
-            : throw new InvalidOperationException("BLE controller is not initialized.");
+    public async Task<byte[]> SendCommandAsync(byte[] command, CancellationToken ct)
+    {
+        if (_transport is not { } transport)
+        {
+            throw new InvalidOperationException("BLE controller is not initialized.");
+        }
+
+        try
+        {
+            return await transport.SendCommandAsync(command, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ShouldMarkDisconnected(ex, ct))
+        {
+            MarkDisconnected($"BLE command failed: {ex.Message}");
+            throw;
+        }
+    }
 
     public Task SetPlayerLedsAsync(byte mask, CancellationToken ct) =>
         SendCommandAsync(NS2ProProtocol.BuildLedCommand(mask), ct);
@@ -270,6 +283,9 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
             logger.Warn(reason);
         }
     }
+
+    private static bool ShouldMarkDisconnected(Exception ex, CancellationToken ct) =>
+        ex is not OperationCanceledException || !ct.IsCancellationRequested;
 
     private void ReportStatsIfDue()
     {
