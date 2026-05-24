@@ -5,8 +5,12 @@ Windows CLI for bridging a Switch 2 Pro Controller over BLE to a virtual USB NS2
 ## Requirements
 
 - Windows x64
+- [usbip-win2](https://github.com/vadimgrn/usbip-win2) installed on the system
 
 ## Usage
+
+Install `usbip-win2` first; the bridge uses it to attach the virtual USB NS2Pro
+device to the local Windows USB bus.
 
 Download `Ns2Pro.BleBridge-v0.1.1-win-x64.exe` from the
 [latest GitHub Release](https://github.com/Cookiekira/ns2pro-ble-bridge/releases/latest).
