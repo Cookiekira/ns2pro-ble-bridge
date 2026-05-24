@@ -10,7 +10,7 @@ internal sealed class Logger(LogLevel minimum)
     public void Warn(string message) => Write(LogLevel.Warn, message);
     public void Error(string message) => Write(LogLevel.Error, message);
 
-    public void Error(Exception ex, string message) => Error($"{message}: {ex.Message}");
+    public void Error(Exception ex, string message) => Error($"{message}: {ex}");
 
     private void Write(LogLevel level, string message)
     {

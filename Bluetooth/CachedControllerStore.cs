@@ -15,7 +15,9 @@ internal static class CachedControllerStore
         try
         {
             var cached = JsonSerializer.Deserialize(File.ReadAllBytes(path), SourceGenerationContext.Default.CachedDevice);
-            return cached is null ? null : BluetoothAddress.Parse(cached.Address);
+            return string.IsNullOrWhiteSpace(cached?.Address)
+                ? null
+                : BluetoothAddress.Parse(cached.Address);
         }
         catch (Exception ex) when (ex is JsonException or FormatException or OverflowException or IOException)
         {

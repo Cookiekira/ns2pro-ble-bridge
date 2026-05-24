@@ -67,11 +67,6 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
     {
         _device = await BluetoothLEDevice.FromBluetoothAddressAsync(address).AsTask(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Could not connect to BLE device {BluetoothAddress.Format(address)}.");
-        _device.ConnectionStatusChanged += OnConnectionStatusChanged;
-        if (_device.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
-        {
-            MarkDisconnected("BLE device reported disconnected immediately after connect.");
-        }
 
         _transport = new BleGattTransport(_device, logger, MarkDisconnected);
         _transport.RequestThroughputOptimized();
@@ -84,6 +79,11 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
         await SendCommandAsync(NS2ProProtocol.Command(0x0C, 0x02, [0xFF, 0, 0, 0]), ct).ConfigureAwait(false);
         await SendCommandAsync(NS2ProProtocol.Command(0x0C, 0x04, [featureFlags, 0, 0, 0]), ct).ConfigureAwait(false);
         await _transport.EnableInputReportsAsync(OnInputReport, ct).ConfigureAwait(false);
+        _device.ConnectionStatusChanged += OnConnectionStatusChanged;
+        if (_device.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
+        {
+            MarkDisconnected("BLE device reported disconnected after initialization.");
+        }
     }
 
     public Task<byte[]> SendCommandAsync(byte[] command, CancellationToken ct) =>
@@ -249,9 +249,17 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
 
     private void OnConnectionStatusChanged(BluetoothLEDevice sender, object args)
     {
-        if (sender.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
+        try
         {
-            MarkDisconnected("BLE device connection status changed to disconnected.");
+            var status = sender?.ConnectionStatus ?? _device?.ConnectionStatus;
+            if (status == BluetoothConnectionStatus.Disconnected)
+            {
+                MarkDisconnected("BLE device connection status changed to disconnected.");
+            }
+        }
+        catch (Exception ex)
+        {
+            MarkDisconnected($"BLE connection status check failed: {ex.Message}");
         }
     }
 

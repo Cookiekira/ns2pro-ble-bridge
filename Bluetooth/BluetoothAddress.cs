@@ -5,6 +5,11 @@ internal static class BluetoothAddress
 {
     public static ulong Parse(string text)
     {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw new FormatException("Bluetooth address cannot be empty.");
+        }
+
         Span<char> hex = stackalloc char[12];
         var n = 0;
         foreach (var ch in text)
