@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
+#if WINDOWS
 using Windows.Devices.Bluetooth.Advertisement;
 using Windows.Storage.Streams;
+#endif
 
 namespace Ns2Pro.BleBridge;
 
@@ -14,31 +16,16 @@ internal readonly record struct Switch2ProAdvertisement(string ModeName)
     private const int ModeOffset = 9;
     private const int MinimumManufacturerDataLength = ModeOffset + 1;
 
-    public static bool TryParse(BluetoothLEAdvertisement advertisement, out Switch2ProAdvertisement match)
+    public static bool TryParse(ushort manufacturerId, ReadOnlySpan<byte> data, out Switch2ProAdvertisement match)
     {
-        foreach (var manufacturer in advertisement.ManufacturerData)
-        {
-            if (manufacturer.CompanyId == NintendoManufacturerId && TryParseManufacturerData(manufacturer.Data, out match))
-            {
-                return true;
-            }
-        }
-
-        match = default;
-        return false;
-    }
-
-    private static bool TryParseManufacturerData(IBuffer buffer, out Switch2ProAdvertisement match)
-    {
-        var data = BufferReader.ReadBytes(buffer);
-        if (data.Length < MinimumManufacturerDataLength)
+        if (manufacturerId != NintendoManufacturerId || data.Length < MinimumManufacturerDataLength)
         {
             match = default;
             return false;
         }
 
-        var vid = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(VidOffset, 2));
-        var pid = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(PidOffset, 2));
+        var vid = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(VidOffset, 2));
+        var pid = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(PidOffset, 2));
         if (vid != NintendoVid || pid != Ns2ProPid)
         {
             match = default;
@@ -47,6 +34,22 @@ internal readonly record struct Switch2ProAdvertisement(string ModeName)
 
         return TryParseMode(data[ModeOffset], out match);
     }
+
+#if WINDOWS
+    public static bool TryParse(BluetoothLEAdvertisement advertisement, out Switch2ProAdvertisement match)
+    {
+        foreach (var manufacturer in advertisement.ManufacturerData)
+        {
+            if (TryParse(manufacturer.CompanyId, BufferReader.ReadBytes(manufacturer.Data), out match))
+            {
+                return true;
+            }
+        }
+
+        match = default;
+        return false;
+    }
+#endif
 
     private static bool TryParseMode(byte mode, out Switch2ProAdvertisement match)
     {

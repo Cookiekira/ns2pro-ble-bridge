@@ -7,14 +7,16 @@ internal sealed class BridgeApp : IDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly ViiperServer _server;
     private readonly ControllerSessionRunner _controllerSessions;
+    private readonly IBluetoothBackend _bluetooth;
 
     public BridgeApp(CliOptions options)
     {
         _options = options;
         _logger = new Logger(options.LogLevel);
+        _bluetooth = BluetoothBackendFactory.Create(_logger);
         _server = new ViiperServer(_logger);
         _controllerSessions = new ControllerSessionRunner(
-            new ControllerSessionConnector(options, _logger),
+            new ControllerSessionConnector(options, _bluetooth, _logger),
             _server,
             _logger);
         Console.CancelKeyPress += OnCancelKeyPress;
@@ -42,6 +44,7 @@ internal sealed class BridgeApp : IDisposable
         _stop.Cancel();
         _stop.Dispose();
         _server.Dispose();
+        _bluetooth.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
     private void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)

@@ -1,6 +1,4 @@
 using System.Buffers.Binary;
-using Windows.Devices.Bluetooth;
-using Windows.Devices.Bluetooth.Advertisement;
 
 namespace Ns2Pro.BleBridge;
 
@@ -9,9 +7,7 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
     private const int RumbleMinIntervalMs = 20;
     private const int StatsIntervalMs = 5_000;
 
-    private readonly TaskCompletionSource _disconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private BluetoothLEDevice? _device;
-    private BleGattTransport? _transport;
+    private IBleTransport? _transport;
     private readonly object _rumbleLock = new();
     private byte[]? _pendingRumble;
     private bool _rumbleWriteInProgress;
@@ -27,50 +23,12 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
 
     public ulong Address { get; private set; }
 
-    public Task Disconnected => _disconnected.Task;
+    public Task Disconnected => _transport?.Disconnected ?? Task.CompletedTask;
 
-    public static async Task<(ulong Address, string Name)> ScanAsync(Logger logger, CancellationToken ct)
-    {
-        var watcher = new BluetoothLEAdvertisementWatcher
-        {
-            ScanningMode = BluetoothLEScanningMode.Active,
-            AllowExtendedAdvertisements = true
-        };
-        var found = new TaskCompletionSource<(ulong Address, string Name)>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        watcher.Received += (_, e) =>
-        {
-            if (!Switch2ProAdvertisement.TryParse(e.Advertisement, out var advertisement))
-            {
-                return;
-            }
-
-            var name = string.IsNullOrWhiteSpace(e.Advertisement.LocalName)
-                ? $"Switch 2 Pro Controller ({advertisement.ModeName})"
-                : e.Advertisement.LocalName;
-            found.TrySetResult((e.BluetoothAddress, name));
-        };
-
-        logger.Info("Scanning for Switch 2 Pro Controller over BLE.");
-        try
-        {
-            watcher.Start();
-            await using var _ = ct.Register(static state => ((TaskCompletionSource<(ulong, string)>)state!).TrySetCanceled(), found);
-            return await found.Task.ConfigureAwait(false);
-        }
-        finally
-        {
-            watcher.Stop();
-        }
-    }
-
-    public async Task ConnectAndInitializeAsync(ulong address, CancellationToken ct)
+    public async Task ConnectAndInitializeAsync(IBluetoothBackend backend, ulong address, CancellationToken ct)
     {
         Address = address;
-        _device = await BluetoothLEDevice.FromBluetoothAddressAsync(address).AsTask(ct).ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Could not connect to BLE device {BluetoothAddress.Format(address)}.");
-
-        _transport = new BleGattTransport(_device, logger);
+        _transport = await backend.ConnectAsync(address, ct).ConfigureAwait(false);
         await _transport.InitializeAsync(ct).ConfigureAwait(false);
 
         await SetPlayerLedsAsync(NS2ProProtocol.DefaultLedPattern, ct).ConfigureAwait(false);
@@ -78,11 +36,6 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
         await SendCommandAsync(NS2ProProtocol.Command(0x0C, 0x02, [0xFF, 0, 0, 0]), ct).ConfigureAwait(false);
         await SendCommandAsync(NS2ProProtocol.Command(0x0C, 0x04, [featureFlags, 0, 0, 0]), ct).ConfigureAwait(false);
         await _transport.EnableInputReportsAsync(OnInputReport, ct).ConfigureAwait(false);
-        _device.ConnectionStatusChanged += OnConnectionStatusChanged;
-        if (_device.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
-        {
-            MarkDisconnected("BLE device reported disconnected after initialization.");
-        }
     }
 
     public Task<byte[]> SendCommandAsync(byte[] command, CancellationToken ct)
@@ -122,13 +75,6 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
             await _transport.DisposeAsync().ConfigureAwait(false);
             _transport = null;
         }
-        if (_device is not null)
-        {
-            _device.ConnectionStatusChanged -= OnConnectionStatusChanged;
-        }
-        _disconnected.TrySetResult();
-        _device?.Dispose();
-        _device = null;
     }
 
     private async Task ProcessRumbleLoopAsync()
@@ -246,22 +192,6 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
         catch (Exception ex)
         {
             logger.Debug($"Failed to parse BLE input report: {ex.Message}");
-        }
-    }
-
-    private void OnConnectionStatusChanged(BluetoothLEDevice sender, object args)
-    {
-        if (sender.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
-        {
-            MarkDisconnected("BLE device connection status changed to disconnected.");
-        }
-    }
-
-    private void MarkDisconnected(string reason)
-    {
-        if (_disconnected.TrySetResult())
-        {
-            logger.Warn(reason);
         }
     }
 

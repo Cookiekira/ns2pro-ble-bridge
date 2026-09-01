@@ -1,3 +1,4 @@
+#if WINDOWS
 using Windows.Storage.Streams;
 
 namespace Ns2Pro.BleBridge;
@@ -12,3 +13,4 @@ internal static class BufferReader
         return data;
     }
 }
+#endif

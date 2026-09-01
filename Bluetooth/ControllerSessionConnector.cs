@@ -1,8 +1,6 @@
-using Windows.Devices.Bluetooth;
-
 namespace Ns2Pro.BleBridge;
 
-internal sealed class ControllerSessionConnector(CliOptions options, Logger logger)
+internal sealed class ControllerSessionConnector(CliOptions options, IBluetoothBackend backend, Logger logger)
 {
     private enum DeviceSource { Explicit, Cache, Scan }
 
@@ -16,11 +14,11 @@ internal sealed class ControllerSessionConnector(CliOptions options, Logger logg
         try
         {
             logger.Info($"Connecting BLE controller {BluetoothAddress.Format(resolution.Address)}.");
-            await controller.ConnectAndInitializeAsync(resolution.Address, ct).ConfigureAwait(false);
+            await controller.ConnectAndInitializeAsync(backend, resolution.Address, ct).ConfigureAwait(false);
 
-            if (ShouldPairHost(resolution))
+            if (backend.SupportsHostPairing && ShouldPairHost(resolution))
             {
-                var host = options.HostAddress ?? await GetLocalBluetoothAddressAsync(ct).ConfigureAwait(false);
+                var host = options.HostAddress ?? await backend.GetAdapterAddressAsync(ct).ConfigureAwait(false);
                 logger.Info($"Pairing controller to local host {BluetoothAddress.Format(host)}.");
                 await NS2ProPairing.PairHostAsync(controller, host, ct).ConfigureAwait(false);
                 logger.Info("Host pairing completed.");
@@ -60,23 +58,11 @@ internal sealed class ControllerSessionConnector(CliOptions options, Logger logg
                 DeviceSource.Cache);
         }
 
-        var found = await BleController.ScanAsync(logger, ct).ConfigureAwait(false);
+        var found = await backend.ScanAsync(ct).ConfigureAwait(false);
         logger.Info($"Found {found.Name} at {BluetoothAddress.Format(found.Address)}.");
         return new DeviceResolution(found.Address, DeviceSource.Scan);
     }
 
     private bool ShouldPairHost(DeviceResolution resolution) =>
         resolution.Source == DeviceSource.Scan || options.PairKnownDevice;
-
-    private static async Task<ulong> GetLocalBluetoothAddressAsync(CancellationToken ct)
-    {
-        var adapter = await BluetoothAdapter.GetDefaultAsync().AsTask(ct).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("No default Bluetooth adapter is available.");
-        if (adapter.BluetoothAddress == 0)
-        {
-            throw new InvalidOperationException("Default Bluetooth adapter did not report a valid address.");
-        }
-
-        return adapter.BluetoothAddress;
-    }
 }
