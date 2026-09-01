@@ -55,8 +55,8 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
                     }
 
                     var device = Service.CreateDevice1(path);
-                    var manufacturerData = await device.GetManufacturerDataAsync().WaitAsync(ct).ConfigureAwait(false);
-                    if (!TryMatch(manufacturerData, out var match))
+                    var properties = await device.GetNullablePropertiesAsync().WaitAsync(ct).ConfigureAwait(false);
+                    if (properties.ManufacturerData is not { } manufacturerData || !TryMatch(manufacturerData, out var match))
                     {
                         continue;
                     }
@@ -88,7 +88,6 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
         var path = await FindDevicePathAsync(address, ct).ConfigureAwait(false);
         var device = Service.CreateDevice1(path);
         await device.ConnectAsync().WaitAsync(ct).ConfigureAwait(false);
-        await WaitForServicesAsync(device, ct).ConfigureAwait(false);
         return await BluezGattTransport.CreateAsync(_connection, Service, Manager, device, path, _logger, ct).ConfigureAwait(false);
     }
 
@@ -214,16 +213,6 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
             }
         }
         return null;
-    }
-
-    private static async Task WaitForServicesAsync(Device1 device, CancellationToken ct)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(20));
-        while (!await device.GetServicesResolvedAsync().WaitAsync(timeout.Token).ConfigureAwait(false))
-        {
-            await Task.Delay(TimeSpan.FromMilliseconds(200), timeout.Token).ConfigureAwait(false);
-        }
     }
 
     private static bool TryMatch(Dictionary<ushort, VariantValue> data, out Switch2ProAdvertisement match)

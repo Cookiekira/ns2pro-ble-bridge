@@ -155,7 +155,7 @@ internal sealed class BluezGattTransport : IBleTransport
         var found = new Dictionary<Guid, GattCharacteristic1>();
         var prefix = devicePath + "/";
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
 
         while (found.Count < required.Count)
         {
