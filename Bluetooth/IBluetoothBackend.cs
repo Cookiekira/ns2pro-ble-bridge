@@ -4,8 +4,6 @@ internal readonly record struct BleDeviceInfo(ulong Address, string Name);
 
 internal interface IBluetoothBackend : IAsyncDisposable
 {
-    bool SupportsHostPairing { get; }
-
     Task<BleDeviceInfo> ScanAsync(CancellationToken ct);
 
     Task<IBleTransport> ConnectAsync(ulong address, CancellationToken ct);

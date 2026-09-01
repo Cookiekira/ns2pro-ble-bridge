@@ -28,8 +28,6 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
         });
     }
 
-    public bool SupportsHostPairing => false;
-
     public async Task<BleDeviceInfo> ScanAsync(CancellationToken ct)
     {
         var (adapter, _) = await GetAdapterAsync(ct).ConfigureAwait(false);

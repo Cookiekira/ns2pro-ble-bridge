@@ -50,7 +50,6 @@ public sealed class BleControllerBoundaryTests
 
     private sealed class FakeBackend(FakeTransport transport) : IBluetoothBackend
     {
-        public bool SupportsHostPairing => true;
         public ulong ConnectedAddress { get; private set; }
 
         public Task<BleDeviceInfo> ScanAsync(CancellationToken ct) =>
