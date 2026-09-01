@@ -1,0 +1,18 @@
+[Unit]
+Description=NS2Pro BLE Bridge
+Wants=bluetooth.service ns2pro-ble-bridge-usbip-client.service
+After=bluetooth.service
+Before=ns2pro-ble-bridge-usbip-client.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/lib/ns2pro-ble-bridge
+ExecStartPre=/sbin/modprobe vhci_hcd
+ExecStart=/usr/local/libexec/Ns2Pro.BleBridge --no-auto-attach
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=multi-user.target

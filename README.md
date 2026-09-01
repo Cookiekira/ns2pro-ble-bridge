@@ -79,6 +79,29 @@ export manually or from a remote USB/IP client. A typical manual local flow is:
 sudo usbip attach -r localhost -b <bus-id>
 ```
 
+### Run as a systemd service
+
+For a machine-level setup, install the bridge and the two service units. The bridge
+service starts VIIPER and the USB/IP client service performs the local attach as root;
+the `usbip` command exits after handing the connection to `vhci-hcd`.
+
+```bash
+sudo install -Dm755 Ns2Pro.BleBridge-v0.1.1-linux-x64 /usr/local/libexec/Ns2Pro.BleBridge
+sudo install -Dm755 packaging/systemd/ns2pro-ble-bridge-usbip-attach \
+  /usr/local/libexec/ns2pro-ble-bridge-usbip-attach
+sudo install -Dm644 packaging/systemd/ns2pro-ble-bridge.service \
+  /etc/systemd/system/ns2pro-ble-bridge.service
+sudo install -Dm644 packaging/systemd/ns2pro-ble-bridge-usbip-client.service \
+  /etc/systemd/system/ns2pro-ble-bridge-usbip-client.service
+sudo install -d -m755 /var/lib/ns2pro-ble-bridge
+sudo systemctl daemon-reload
+sudo systemctl enable --now ns2pro-ble-bridge.service
+```
+
+Inspect the services with `systemctl status ns2pro-ble-bridge.service` and
+`systemctl status ns2pro-ble-bridge-usbip-client.service`; logs are available with
+`journalctl -u ns2pro-ble-bridge.service -f`.
+
 On first use, put the controller in Bluetooth pairing mode. The bridge discovers it,
 runs the NS2Pro host-pairing exchange using the selected adapter's address, and stores
 the controller address. Later runs reconnect from that cache. Use `--pair-host` to
