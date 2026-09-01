@@ -6,15 +6,18 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <DefaultItemExcludes>$(DefaultItemExcludes);vendor\**;Tests\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);vendor/**;Tests/**</DefaultItemExcludes>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
     <TrimMode>full</TrimMode>
     <OptimizationPreference>Speed</OptimizationPreference>
     <ViiperSourceRoot Condition="'$(ViiperSourceRoot)' == ''">$(VIIPER_SOURCE_ROOT)</ViiperSourceRoot>
-    <ViiperSourceRoot Condition="'$(ViiperSourceRoot)' == ''">$(MSBuildProjectDirectory)\vendor\VIIPER</ViiperSourceRoot>
-    <ViiperLibraryDir>$(MSBuildProjectDirectory)\$(BaseIntermediateOutputPath)$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\viiper-native\</ViiperLibraryDir>
-    <ViiperLibrary>$(ViiperLibraryDir)libVIIPER.dll</ViiperLibrary>
+    <ViiperSourceRoot Condition="'$(ViiperSourceRoot)' == ''">$(MSBuildProjectDirectory)/vendor/VIIPER</ViiperSourceRoot>
+    <ViiperLibraryFile Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win-')) Or $([System.String]::Copy('$(TargetFramework)').Contains('-windows'))">libVIIPER.dll</ViiperLibraryFile>
+    <ViiperLibraryFile Condition="'$(ViiperLibraryFile)' == ''">libVIIPER.so</ViiperLibraryFile>
+    <ViiperLibraryDir>$(MSBuildProjectDirectory)/$(BaseIntermediateOutputPath)$(Configuration)/$(TargetFramework)/$(RuntimeIdentifier)/viiper-native/</ViiperLibraryDir>
+    <ViiperLibrary>$(ViiperLibraryDir)$(ViiperLibraryFile)</ViiperLibrary>
+    <ViiperResourceName>Ns2Pro.BleBridge.Native.$(ViiperLibraryFile)</ViiperResourceName>
     <BuildViiperLibrary Condition="'$(BuildViiperLibrary)' == ''">true</BuildViiperLibrary>
   </PropertyGroup>
 
@@ -29,7 +32,7 @@
   </ItemGroup>
 
   <Target Name="BuildViiperLibrary" BeforeTargets="AssignTargetPaths" Condition="'$(BuildViiperLibrary)' == 'true'">
-    <Error Condition="!Exists('$(ViiperSourceRoot)\go.mod') Or !Exists('$(ViiperSourceRoot)\lib\viiper')"
+    <Error Condition="!Exists('$(ViiperSourceRoot)/go.mod') Or !Exists('$(ViiperSourceRoot)/lib/viiper')"
            Text="VIIPER source was not found at $(ViiperSourceRoot). Run 'git submodule update --init --recursive' or set VIIPER_SOURCE_ROOT /p:ViiperSourceRoot=&lt;path-to-VIIPER&gt;." />
     <MakeDir Directories="$(ViiperLibraryDir)" />
     <Exec WorkingDirectory="$(ViiperSourceRoot)"
@@ -38,6 +41,6 @@
   </Target>
 
   <ItemGroup Condition="'$(BuildViiperLibrary)' == 'true'">
-    <EmbeddedResource Include="$(ViiperLibrary)" LogicalName="Ns2Pro.BleBridge.Native.libVIIPER.dll" />
+    <EmbeddedResource Include="$(ViiperLibrary)" LogicalName="$(ViiperResourceName)" />
   </ItemGroup>
 </Project>

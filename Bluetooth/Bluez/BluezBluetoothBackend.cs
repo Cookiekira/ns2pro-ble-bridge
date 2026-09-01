@@ -95,6 +95,25 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
         return BluetoothAddress.Parse(await adapter.GetAddressAsync().WaitAsync(ct).ConfigureAwait(false));
     }
 
+    internal async Task SmokeTestAsync(CancellationToken ct)
+    {
+        var (adapter, _) = await GetAdapterAsync(ct).ConfigureAwait(false);
+        await adapter.SetDiscoveryFilterAsync(new Dictionary<string, VariantValue>
+        {
+            ["Transport"] = VariantValue.String("le")
+        }).WaitAsync(ct).ConfigureAwait(false);
+        await adapter.StartDiscoveryAsync().WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            await adapter.StopDiscoveryAsync().ConfigureAwait(false);
+        }
+        _logger.Info("BlueZ system-bus adapter/discovery smoke test passed.");
+    }
+
     public ValueTask DisposeAsync()
     {
         if (!_disposed)

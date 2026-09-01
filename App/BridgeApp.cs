@@ -31,7 +31,18 @@ internal sealed class BridgeApp : IDisposable
             return 0;
         }
 
-        _server.Start(_options.UsbAddr, autoAttach: !_options.NoAutoAttach);
+        try
+        {
+            _server.Start(_options.UsbAddr, autoAttach: !_options.NoAutoAttach);
+        }
+        catch (Exception ex)
+        {
+            var guidance = OperatingSystem.IsLinux()
+                ? " Install the distribution USB/IP tools, load vhci-hcd, and run with permission to attach USB/IP devices; or use --no-auto-attach."
+                : " Verify usbip-win2 is installed; or use --no-auto-attach.";
+            _logger.Error(ex, $"Virtual USB/VIIPER setup failed.{guidance}");
+            return 2;
+        }
         _server.Update(NS2ProInputState.Default);
         await _controllerSessions.RunAsync(_stop.Token).ConfigureAwait(false);
         return 0;
