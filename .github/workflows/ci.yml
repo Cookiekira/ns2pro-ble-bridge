@@ -36,7 +36,7 @@ jobs:
       - name: Verify native resource
         run: bin/Release/net10.0/linux-x64/publish/Ns2Pro.BleBridge --verify-native-library
 
-      - name: BlueZ smoke test when available
+      - name: BlueZ smoke test when service is available
         shell: bash
         run: |
           if busctl --system --no-pager status org.bluez >/dev/null 2>&1; then
