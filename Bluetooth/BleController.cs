@@ -251,17 +251,9 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
 
     private void OnConnectionStatusChanged(BluetoothLEDevice sender, object args)
     {
-        try
+        if (sender.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
         {
-            var status = sender?.ConnectionStatus ?? _device?.ConnectionStatus;
-            if (status == BluetoothConnectionStatus.Disconnected)
-            {
-                MarkDisconnected("BLE device connection status changed to disconnected.");
-            }
-        }
-        catch (Exception ex)
-        {
-            MarkDisconnected($"BLE connection status check failed: {ex.Message}");
+            MarkDisconnected("BLE device connection status changed to disconnected.");
         }
     }
 
