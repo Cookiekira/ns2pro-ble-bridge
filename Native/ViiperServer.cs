@@ -3,81 +3,6 @@ using System.Runtime.InteropServices;
 
 namespace Ns2Pro.BleBridge;
 
-internal static unsafe partial class NativeViiper
-{
-    private const string LibraryName = "libVIIPER";
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct UsbServerConfig
-    {
-        public byte* Addr;
-        public ulong ConnectionTimeoutMs;
-        public ulong DeviceHandlerConnectTimeoutMs;
-        public uint WriteBatchFlushIntervalMs;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct NS2ProDeviceState
-    {
-        public uint Buttons;
-        public ushort LX;
-        public ushort LY;
-        public ushort RX;
-        public ushort RY;
-        public short AccelX;
-        public short AccelY;
-        public short AccelZ;
-        public short GyroX;
-        public short GyroY;
-        public short GyroZ;
-        public byte BatteryLevel;
-        public byte Charging;
-        public byte ExternalPower;
-    }
-
-    [LibraryImport(LibraryName)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static partial bool NewUSBServer(UsbServerConfig* config, nuint* outHandle, delegate* unmanaged[Cdecl]<int, byte*, void> logCallback);
-
-    [LibraryImport(LibraryName)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static partial bool CloseUSBServer(nuint handle);
-
-    [LibraryImport(LibraryName)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static partial bool CreateUSBBus(nuint handle, uint* busId);
-
-    [LibraryImport(LibraryName)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static partial bool RemoveUSBBus(nuint handle, uint busId);
-
-    [LibraryImport(LibraryName)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static partial bool CreateNS2ProDevice(nuint serverHandle, nuint* outDeviceHandle, uint busId, [MarshalAs(UnmanagedType.I1)] bool autoAttachLocalhost, ushort idVendor, ushort idProduct);
-
-    [LibraryImport(LibraryName)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static partial bool SetNS2ProDeviceState(nuint handle, NS2ProDeviceState state);
-
-    [LibraryImport(LibraryName)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static partial bool SetNS2ProOutputCallback(nuint handle, delegate* unmanaged[Cdecl]<nuint, byte*, byte*, byte, byte, void> callback);
-
-    [LibraryImport(LibraryName)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static partial bool RemoveNS2ProDevice(nuint handle);
-
-    public static byte* Utf8String(string value)
-    {
-        var bytes = System.Text.Encoding.UTF8.GetBytes(value + '\0');
-        var ptr = (byte*)NativeMemory.Alloc((nuint)bytes.Length);
-        bytes.CopyTo(new Span<byte>(ptr, bytes.Length));
-        return ptr;
-    }
-
-    public static void Free(void* ptr) => NativeMemory.Free(ptr);
-}
-
 internal sealed unsafe class ViiperServer : IDisposable
 {
     private readonly Logger _logger;
@@ -89,6 +14,9 @@ internal sealed unsafe class ViiperServer : IDisposable
     public ViiperServer(Logger logger) => _logger = logger;
 
     public nuint DeviceHandle => _device;
+
+    public void SetOutputTarget(IControllerOutputTarget? target) =>
+        NativeOutputRouter.SetTarget(_device, target);
 
     public void Start(string usbAddr, bool autoAttach)
     {
@@ -128,7 +56,7 @@ internal sealed unsafe class ViiperServer : IDisposable
         }
         _device = device;
 
-        if (!NativeViiper.SetNS2ProOutputCallback(_device, &BridgeApp.OnNativeOutput))
+        if (!NativeViiper.SetNS2ProOutputCallback(_device, &NativeOutputRouter.OnNativeOutput))
         {
             throw new InvalidOperationException("SetNS2ProOutputCallback failed");
         }
@@ -154,6 +82,7 @@ internal sealed unsafe class ViiperServer : IDisposable
 
         if (_device != 0)
         {
+            SetOutputTarget(null);
             _ = NativeViiper.SetNS2ProOutputCallback(_device, null);
             _ = NativeViiper.RemoveNS2ProDevice(_device);
             _device = 0;

@@ -5,8 +5,12 @@ Windows CLI for bridging a Switch 2 Pro Controller over BLE to a virtual USB NS2
 ## Requirements
 
 - Windows x64
+- [usbip-win2](https://github.com/vadimgrn/usbip-win2) installed on the system
 
 ## Usage
+
+Install `usbip-win2` first; the bridge uses it to attach the virtual USB NS2Pro
+device to the local Windows USB bus.
 
 Download `Ns2Pro.BleBridge-v0.1.1-win-x64.exe` from the
 [latest GitHub Release](https://github.com/Cookiekira/ns2pro-ble-bridge/releases/latest).
@@ -40,20 +44,33 @@ Options:
 
 Build requirements:
 
-- .NET SDK with `net10.0-windows` support
+- .NET10 SDK
+- Windows SDK `10.0.26100.0`
 - Go toolchain
-- VIIPER source checkout
+- VIIPER submodule initialized
 
-Set the path to the VIIPER source checkout, then publish the bridge:
+Clone the repository with submodules, then publish the bridge:
+
+```powershell
+git clone --recurse-submodules https://github.com/Cookiekira/ns2pro-ble-bridge.git
+cd ns2pro-ble-bridge
+dotnet publish .\Ns2Pro.BleBridge.csproj -c Release -r win-x64
+```
+
+If you already cloned the repository without submodules, initialize VIIPER before
+building:
+
+```powershell
+git submodule update --init --recursive
+```
+
+By default, the build uses `vendor\VIIPER`. To build against a different VIIPER
+checkout, set `VIIPER_SOURCE_ROOT` or pass the path as an MSBuild property:
 
 ```powershell
 $env:VIIPER_SOURCE_ROOT = "C:\path\to\VIIPER"
 dotnet publish .\Ns2Pro.BleBridge.csproj -c Release -r win-x64
-```
 
-You can also pass the VIIPER path as an MSBuild property:
-
-```powershell
 dotnet publish .\Ns2Pro.BleBridge.csproj -c Release -r win-x64 /p:ViiperSourceRoot=C:\path\to\VIIPER
 ```
 

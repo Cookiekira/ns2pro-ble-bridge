@@ -30,7 +30,7 @@ internal readonly record struct Switch2ProAdvertisement(string ModeName)
 
     private static bool TryParseManufacturerData(IBuffer buffer, out Switch2ProAdvertisement match)
     {
-        var data = ReadBytes(buffer);
+        var data = BufferReader.ReadBytes(buffer);
         if (data.Length < MinimumManufacturerDataLength)
         {
             match = default;
@@ -57,13 +57,5 @@ internal readonly record struct Switch2ProAdvertisement(string ModeName)
             _ => default
         };
         return match != default;
-    }
-
-    private static byte[] ReadBytes(IBuffer buffer)
-    {
-        using var reader = DataReader.FromBuffer(buffer);
-        var data = new byte[reader.UnconsumedBufferLength];
-        reader.ReadBytes(data);
-        return data;
     }
 }

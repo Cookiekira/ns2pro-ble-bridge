@@ -6,30 +6,27 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefaultItemExcludes>$(DefaultItemExcludes);vendor\**</DefaultItemExcludes>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
     <TrimMode>full</TrimMode>
     <OptimizationPreference>Speed</OptimizationPreference>
-    <ViiperSourceRoot Condition="'$(ViiperSourceRoot)' == '' and '$(VIIPER_SOURCE_ROOT)' != ''">$(VIIPER_SOURCE_ROOT)</ViiperSourceRoot>
-    <ViiperNativeOutputDir>$(BaseIntermediateOutputPath)$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\viiper-native\</ViiperNativeOutputDir>
-    <BuiltViiperLibrary>$(ViiperNativeOutputDir)libVIIPER.dll</BuiltViiperLibrary>
+    <ViiperSourceRoot Condition="'$(ViiperSourceRoot)' == ''">$(VIIPER_SOURCE_ROOT)</ViiperSourceRoot>
+    <ViiperSourceRoot Condition="'$(ViiperSourceRoot)' == ''">$(MSBuildProjectDirectory)\vendor\VIIPER</ViiperSourceRoot>
+    <ViiperLibraryDir>$(MSBuildProjectDirectory)\$(BaseIntermediateOutputPath)$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\viiper-native\</ViiperLibraryDir>
+    <ViiperLibrary>$(ViiperLibraryDir)libVIIPER.dll</ViiperLibrary>
   </PropertyGroup>
 
   <Target Name="BuildViiperLibrary" BeforeTargets="AssignTargetPaths">
-    <Error Condition="'$(ViiperSourceRoot)' == ''"
-           Text="ViiperSourceRoot is required. Set VIIPER_SOURCE_ROOT or build with /p:ViiperSourceRoot=&lt;path-to-VIIPER&gt;." />
-    <Error Condition="!Exists('$(ViiperSourceRoot)\go.mod')"
-           Text="ViiperSourceRoot must point to a VIIPER checkout containing go.mod: $(ViiperSourceRoot)" />
-    <Error Condition="!Exists('$(ViiperSourceRoot)\lib\viiper')"
-           Text="ViiperSourceRoot must contain lib\viiper: $(ViiperSourceRoot)" />
-    <MakeDir Directories="$(ViiperNativeOutputDir)" />
+    <Error Condition="!Exists('$(ViiperSourceRoot)\go.mod') Or !Exists('$(ViiperSourceRoot)\lib\viiper')"
+           Text="VIIPER source was not found at $(ViiperSourceRoot). Run 'git submodule update --init --recursive' or set VIIPER_SOURCE_ROOT /p:ViiperSourceRoot=&lt;path-to-VIIPER&gt;." />
+    <MakeDir Directories="$(ViiperLibraryDir)" />
     <Exec WorkingDirectory="$(ViiperSourceRoot)"
           EnvironmentVariables="CGO_ENABLED=1"
-          Command="go build -buildmode=c-shared -trimpath -o &quot;$(MSBuildProjectDirectory)\$(BuiltViiperLibrary)&quot; ./lib/viiper" />
+          Command="go build -buildmode=c-shared -trimpath -o &quot;$(ViiperLibrary)&quot; ./lib/viiper" />
   </Target>
 
   <ItemGroup>
-    <EmbeddedResource Include="$(BuiltViiperLibrary)"
-                      LogicalName="Ns2Pro.BleBridge.Native.libVIIPER.dll" />
+    <EmbeddedResource Include="$(ViiperLibrary)" LogicalName="Ns2Pro.BleBridge.Native.libVIIPER.dll" />
   </ItemGroup>
 </Project>

@@ -1,0 +1,3 @@
+[submodule "vendor/VIIPER"]
+	path = vendor/VIIPER
+	url = https://github.com/Cookiekira/VIIPER.git

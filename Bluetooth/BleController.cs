@@ -1,33 +1,22 @@
 using System.Buffers.Binary;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
-using Windows.Devices.Bluetooth.GenericAttributeProfile;
-using Windows.Foundation;
-using Windows.Storage.Streams;
 
 namespace Ns2Pro.BleBridge;
 
-internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDisposable
+internal sealed class BleController(Logger logger, byte featureFlags) : IControllerCommandChannel, IControllerOutputTarget, IAsyncDisposable
 {
     private const int RumbleMinIntervalMs = 20;
     private const int StatsIntervalMs = 5_000;
 
-    private static readonly Guid InitUuid = Guid.Parse("00c5af5d-1964-4e30-8f51-1956f96bd282");
-    private static readonly Guid InputUuid = Guid.Parse("ab7de9be-89fe-49ad-828f-118f09df7fd2");
-    private static readonly Guid VibrationUuid = Guid.Parse("cc483f51-9258-427d-a939-630c31f72b05");
-    private static readonly Guid CommandUuid = Guid.Parse("649d4ac9-8eb7-4e6c-af44-1ea54fe5f005");
-    private static readonly Guid CommandResponseUuid = Guid.Parse("c765a961-d9d8-4d36-a20a-5315b111836a");
-
+    private readonly TaskCompletionSource _disconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private BluetoothLEDevice? _device;
-    private BluetoothLEPreferredConnectionParametersRequest? _connectionRequest;
-    private readonly Dictionary<Guid, GattCharacteristic> _characteristics = [];
-    private readonly SemaphoreSlim _commandSemaphore = new(1, 1);
+    private BleGattTransport? _transport;
     private readonly object _rumbleLock = new();
     private byte[]? _pendingRumble;
     private bool _rumbleWriteInProgress;
     private StickCalibration? _primaryStick;
     private StickCalibration? _secondaryStick;
-    private TaskCompletionSource<byte[]> _nextCommandResponse = NewResponseSource();
     private long _inputReportCount;
     private long _rumbleRequestCount;
     private long _rumbleWriteCount;
@@ -35,6 +24,10 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
     private long _lastAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false);
 
     public event Action<NS2ProInputState>? InputReceived;
+
+    public ulong Address { get; private set; }
+
+    public Task Disconnected => _disconnected.Task;
 
     public static async Task<(ulong Address, string Name)> ScanAsync(Logger logger, CancellationToken ct)
     {
@@ -73,38 +66,33 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
 
     public async Task ConnectAndInitializeAsync(ulong address, CancellationToken ct)
     {
+        Address = address;
         _device = await BluetoothLEDevice.FromBluetoothAddressAsync(address).AsTask(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Could not connect to BLE device {BluetoothAddress.Format(address)}.");
 
-        RequestThroughputOptimized();
-        await DiscoverAsync(ct).ConfigureAwait(false);
+        _transport = new BleGattTransport(_device, logger);
+        await _transport.InitializeAsync(ct).ConfigureAwait(false);
 
-        await WriteAsync(InitUuid, [0x01, 0x00], ct).ConfigureAwait(false);
-        await EnableNotificationsAsync(CommandResponseUuid, OnCommandResponse, ct).ConfigureAwait(false);
         await SetPlayerLedsAsync(NS2ProProtocol.DefaultLedPattern, ct).ConfigureAwait(false);
         await LoadStickCalibrationAsync(ct).ConfigureAwait(false);
         await SendCommandAsync(NS2ProProtocol.Command(0x0C, 0x02, [0xFF, 0, 0, 0]), ct).ConfigureAwait(false);
         await SendCommandAsync(NS2ProProtocol.Command(0x0C, 0x04, [featureFlags, 0, 0, 0]), ct).ConfigureAwait(false);
-        await EnableNotificationsAsync(InputUuid, OnInputReport, ct).ConfigureAwait(false);
+        await _transport.EnableInputReportsAsync(OnInputReport, ct).ConfigureAwait(false);
+        _device.ConnectionStatusChanged += OnConnectionStatusChanged;
+        if (_device.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
+        {
+            MarkDisconnected("BLE device reported disconnected after initialization.");
+        }
     }
 
-    public async Task<byte[]> SendCommandAsync(byte[] command, CancellationToken ct)
+    public Task<byte[]> SendCommandAsync(byte[] command, CancellationToken ct)
     {
-        await _commandSemaphore.WaitAsync(ct).ConfigureAwait(false);
-        try
+        if (_transport is not { } transport)
         {
-            var responseSource = NewResponseSource();
-            _nextCommandResponse = responseSource;
-            await WriteAsync(CommandUuid, command, ct).ConfigureAwait(false);
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
-            await using var _ = linked.Token.Register(static state => ((TaskCompletionSource<byte[]>)state!).TrySetCanceled(), responseSource);
-            return await responseSource.Task.ConfigureAwait(false);
+            throw new InvalidOperationException("BLE controller is not initialized.");
         }
-        finally
-        {
-            _commandSemaphore.Release();
-        }
+
+        return transport.SendCommandAsync(command, ct);
     }
 
     public Task SetPlayerLedsAsync(byte mask, CancellationToken ct) =>
@@ -129,18 +117,18 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var ch in _characteristics.Values)
+        if (_transport is not null)
         {
-            ch.ValueChanged -= OnCommandResponse;
-            ch.ValueChanged -= OnInputReport;
+            await _transport.DisposeAsync().ConfigureAwait(false);
+            _transport = null;
         }
-        if (_connectionRequest is not null)
+        if (_device is not null)
         {
-            _connectionRequest.Dispose();
-            _connectionRequest = null;
+            _device.ConnectionStatusChanged -= OnConnectionStatusChanged;
         }
+        _disconnected.TrySetResult();
         _device?.Dispose();
-        _commandSemaphore.Dispose();
+        _device = null;
     }
 
     private async Task ProcessRumbleLoopAsync()
@@ -169,7 +157,12 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
             try
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-                await WriteAsync(VibrationUuid, packet, cts.Token).ConfigureAwait(false);
+                if (_transport is null)
+                {
+                    break;
+                }
+
+                await _transport.WriteVibrationAsync(packet, cts.Token).ConfigureAwait(false);
                 Interlocked.Increment(ref _rumbleWriteCount);
                 nextAllowedWriteTicks = Environment.TickCount64 + RumbleMinIntervalMs;
                 ReportStatsIfDue();
@@ -178,49 +171,6 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
             {
                 logger.Debug($"Rumble write failed: {ex.Message}");
             }
-        }
-    }
-
-    private async Task DiscoverAsync(CancellationToken ct)
-    {
-        var result = await _device!.GetGattServicesAsync(BluetoothCacheMode.Uncached).AsTask(ct).ConfigureAwait(false);
-        if (result.Status != GattCommunicationStatus.Success)
-        {
-            throw new InvalidOperationException($"GATT service discovery failed: {result.Status}");
-        }
-
-        foreach (var service in result.Services)
-        {
-            var chars = await service.GetCharacteristicsAsync(BluetoothCacheMode.Uncached).AsTask(ct).ConfigureAwait(false);
-            if (chars.Status != GattCommunicationStatus.Success)
-            {
-                continue;
-            }
-            foreach (var ch in chars.Characteristics)
-            {
-                _characteristics[ch.Uuid] = ch;
-            }
-        }
-
-        foreach (var required in new[] { InitUuid, InputUuid, VibrationUuid, CommandUuid, CommandResponseUuid })
-        {
-            if (!_characteristics.ContainsKey(required))
-            {
-                throw new InvalidOperationException($"Required GATT characteristic missing: {required}");
-            }
-        }
-    }
-
-    private void RequestThroughputOptimized()
-    {
-        try
-        {
-            _connectionRequest = _device!.RequestPreferredConnectionParameters(BluetoothLEPreferredConnectionParameters.ThroughputOptimized);
-            logger.Info($"Requested BLE throughput-optimized connection parameters: {_connectionRequest.Status}");
-        }
-        catch (Exception ex)
-        {
-            logger.Debug($"Could not request throughput-optimized BLE connection parameters: {ex.Message}");
         }
     }
 
@@ -284,40 +234,10 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
         return payload[8..(8 + n)].ToArray();
     }
 
-    private async Task EnableNotificationsAsync(Guid uuid, TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs> handler, CancellationToken ct)
-    {
-        var ch = _characteristics[uuid];
-        ch.ValueChanged += handler;
-        var status = await ch.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.Notify).AsTask(ct).ConfigureAwait(false);
-        if (status != GattCommunicationStatus.Success)
-        {
-            ch.ValueChanged -= handler;
-            throw new InvalidOperationException($"Failed to enable notifications for {uuid}: {status}");
-        }
-    }
-
-    private async Task WriteAsync(Guid uuid, byte[] data, CancellationToken ct)
-    {
-        using var writer = new DataWriter();
-        writer.WriteBytes(data);
-        var status = await _characteristics[uuid].WriteValueAsync(writer.DetachBuffer(), GattWriteOption.WriteWithoutResponse).AsTask(ct).ConfigureAwait(false);
-        if (status != GattCommunicationStatus.Success)
-        {
-            throw new InvalidOperationException($"GATT write failed for {uuid}: {status}");
-        }
-    }
-
-    private void OnCommandResponse(GattCharacteristic sender, GattValueChangedEventArgs args)
-    {
-        var data = ReadBytes(args.CharacteristicValue);
-        _nextCommandResponse.TrySetResult(data);
-    }
-
-    private void OnInputReport(GattCharacteristic sender, GattValueChangedEventArgs args)
+    private void OnInputReport(byte[] data)
     {
         try
         {
-            var data = ReadBytes(args.CharacteristicValue);
             Interlocked.Increment(ref _inputReportCount);
             ReportStatsIfDue();
             var state = NS2ProProtocol.ParseCommonReport(data, _primaryStick, _secondaryStick);
@@ -329,16 +249,21 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IAsyncDi
         }
     }
 
-    private static byte[] ReadBytes(IBuffer buffer)
+    private void OnConnectionStatusChanged(BluetoothLEDevice sender, object args)
     {
-        using var reader = DataReader.FromBuffer(buffer);
-        var data = new byte[reader.UnconsumedBufferLength];
-        reader.ReadBytes(data);
-        return data;
+        if (sender.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
+        {
+            MarkDisconnected("BLE device connection status changed to disconnected.");
+        }
     }
 
-    private static TaskCompletionSource<byte[]> NewResponseSource() =>
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private void MarkDisconnected(string reason)
+    {
+        if (_disconnected.TrySetResult())
+        {
+            logger.Warn(reason);
+        }
+    }
 
     private void ReportStatsIfDue()
     {

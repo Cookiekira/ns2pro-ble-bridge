@@ -18,13 +18,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           path: src
-
-      - name: Checkout VIIPER
-        uses: actions/checkout@v6
-        with:
-          repository: Cookiekira/VIIPER
-          ref: main
-          path: viiper
+          submodules: recursive
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
@@ -34,14 +28,14 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: viiper/go.mod
+          go-version-file: src/vendor/VIIPER/go.mod
 
       - name: Publish
         shell: pwsh
         run: |
           $publishDir = Join-Path $env:GITHUB_WORKSPACE "publish-output"
           New-Item -ItemType Directory -Force $publishDir | Out-Null
-          dotnet publish src\Ns2Pro.BleBridge.csproj -c Release -r win-x64 "-p:ViiperSourceRoot=$env:GITHUB_WORKSPACE\viiper" -p:ContinuousIntegrationBuild=true "-p:PublishDir=$publishDir\"
+          dotnet publish src\Ns2Pro.BleBridge.csproj -c Release -r win-x64 -p:ContinuousIntegrationBuild=true "-p:PublishDir=$publishDir\"
 
       - name: Prepare artifact
         shell: pwsh
