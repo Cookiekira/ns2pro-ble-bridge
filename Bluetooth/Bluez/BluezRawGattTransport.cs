@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using Microsoft.Win32.SafeHandles;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using Tmds.DBus.Protocol;
@@ -64,7 +65,6 @@ internal sealed class BluezRawGattTransport : IBleTransport
     private readonly Task _readerTask;
     private bool _closing;
     private bool _disposed;
-    private int _mtu = 23;
 
     private BluezRawGattTransport(Socket socket, Dictionary<Guid, Characteristic> characteristics, Logger logger)
     {
@@ -243,7 +243,15 @@ internal sealed class BluezRawGattTransport : IBleTransport
         {
             while (!_closing)
             {
-                var count = await _socket.ReceiveAsync(buffer, SocketFlags.None).ConfigureAwait(false);
+                int count;
+                try
+                {
+                    count = await _socket.ReceiveAsync(buffer, SocketFlags.None).ConfigureAwait(false);
+                }
+                catch (SocketException ex) when (ex.SocketErrorCode == SocketError.TimedOut)
+                {
+                    continue;
+                }
                 if (count <= 0)
                 {
                     break;
@@ -347,7 +355,15 @@ internal sealed class BluezRawGattTransport : IBleTransport
             {
                 while (!readerCts.IsCancellationRequested)
                 {
-                    var count = await socket.ReceiveAsync(buffer, SocketFlags.None, readerCts.Token).ConfigureAwait(false);
+                    int count;
+                    try
+                    {
+                        count = await socket.ReceiveAsync(buffer, SocketFlags.None, readerCts.Token).ConfigureAwait(false);
+                    }
+                    catch (SocketException ex) when (ex.SocketErrorCode == SocketError.TimedOut)
+                    {
+                        continue;
+                    }
                     if (count <= 0) break;
                     var packet = buffer.AsSpan(0, count).ToArray();
                     if (packet[0] == AttHandleValueNotification) continue;
@@ -401,7 +417,7 @@ internal sealed class BluezRawGattTransport : IBleTransport
                 var mtuResponse = await Request([AttExchangeMtuRequest, 0xF7, 0x00]).ConfigureAwait(false);
                 if (mtuResponse.Length >= 3 && mtuResponse[0] == AttExchangeMtuResponse)
                 {
-                    logger.Debug($"Raw ATT MTU negotiated at {Math.Min(247, BinaryPrimitives.ReadUInt16LittleEndian(mtuResponse.AsSpan(1, 2)))}.");
+                    logger.Debug($"Raw ATT MTU negotiated at {Math.Min(247, (int)BinaryPrimitives.ReadUInt16LittleEndian(mtuResponse.AsSpan(1, 2)))}.");
                 }
             }
             catch (Exception ex) when (ex is AttRequestException or TimeoutException)
@@ -507,7 +523,7 @@ internal sealed class BluezRawGattTransport : IBleTransport
                             .Select(candidate => candidate.DeclarationHandle)
                             .DefaultIfEmpty((ushort)(service.End + 1))
                             .Min();
-                        var descriptorEnd = (ushort)Math.Min(service.End, nextDeclaration - 1);
+                        var descriptorEnd = (ushort)Math.Min((int)service.End, nextDeclaration - 1);
                         if (characteristic.ValueHandle < descriptorEnd)
                         {
                             var cccd = await FindCccdAsync(Request, characteristic.ValueHandle, descriptorEnd)
@@ -628,7 +644,13 @@ internal sealed class BluezRawGattTransport : IBleTransport
         byte deviceAddressType,
         CancellationToken ct)
     {
-        var socket = new Socket((AddressFamily)AfBluetooth, (SocketType)SockSeqPacket, (ProtocolType)BtprotoL2Cap);
+        var fd = createSocket(AfBluetooth, SockSeqPacket, BtprotoL2Cap);
+        if (fd < 0)
+        {
+            throw new SocketException(Marshal.GetLastWin32Error());
+        }
+
+        var socket = new Socket(new SafeSocketHandle((nint)fd, ownsHandle: true));
         try
         {
             var security = new byte[] { BtSecurityLow, 0 };
@@ -734,6 +756,9 @@ internal sealed class BluezRawGattTransport : IBleTransport
         public short Events;
         public short Revents;
     }
+
+    [DllImport("libc", EntryPoint = "socket", SetLastError = true)]
+    private static extern int createSocket(int domain, int type, int protocol);
 
     [DllImport("libc", SetLastError = true)]
     private static extern int bind(int socket, byte[] address, uint addressLength);

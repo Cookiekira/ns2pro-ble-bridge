@@ -79,23 +79,16 @@ export manually or from a remote USB/IP client. A typical manual local flow is:
 sudo usbip attach -r localhost -b <bus-id>
 ```
 
-### Run as a systemd service
+### Manual startup
 
-For a machine-level setup, install the bridge service. VIIPER starts its USB/IP
-server and performs the local `vhci-hcd` attach in-process, so no second USB/IP
-client service is needed.
+The bridge is intentionally run by hand for now. VIIPER starts its USB/IP server
+and performs the local `vhci-hcd` attach in-process; no separate USB/IP client or
+systemd unit is needed.
 
 ```bash
-sudo install -Dm755 Ns2Pro.BleBridge-v0.1.1-linux-x64 /usr/local/libexec/Ns2Pro.BleBridge
-sudo install -Dm644 packaging/systemd/ns2pro-ble-bridge.service \
-  /etc/systemd/system/ns2pro-ble-bridge.service
-sudo install -d -m755 /var/lib/ns2pro-ble-bridge
-sudo systemctl daemon-reload
-sudo systemctl enable --now ns2pro-ble-bridge.service
+sudo modprobe vhci-hcd
+./Ns2Pro.BleBridge-v0.1.1-linux-x64
 ```
-
-Inspect the service with `systemctl status ns2pro-ble-bridge.service`; logs are
-available with `journalctl -u ns2pro-ble-bridge.service -f`.
 
 On first use, put the controller in Bluetooth pairing mode. The bridge discovers it,
 runs the NS2Pro host-pairing exchange using the selected adapter's address, and stores

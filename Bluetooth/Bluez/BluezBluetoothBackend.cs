@@ -38,37 +38,79 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
         }).WaitAsync(ct).ConfigureAwait(false);
 
         _logger.Info("Scanning for Switch 2 Pro Controller through BlueZ.");
+        var objects = await Manager.GetManagedObjectsAsync().WaitAsync(ct).ConfigureAwait(false);
+        var knownPaths = objects
+            .Where(pair => pair.Value.ContainsKey(DeviceInterface))
+            .Select(pair => pair.Key)
+            .ToHashSet();
+        var watches = new List<IDisposable>();
+        var found = new TaskCompletionSource<BleDeviceInfo>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task WatchDeviceAsync(ObjectPath path, bool processCurrentAdvertisement)
+        {
+            var device = Service.CreateDevice1(path);
+            var address = BluetoothAddress.Parse(await device.GetAddressAsync().WaitAsync(ct).ConfigureAwait(false));
+            var name = await GetDeviceNameAsync(device).ConfigureAwait(false);
+
+            if (processCurrentAdvertisement)
+            {
+                var current = await device.GetNullablePropertiesAsync().WaitAsync(ct).ConfigureAwait(false);
+                if (current.ManufacturerData is { } manufacturerData && TryMatch(manufacturerData, out var match))
+                {
+                    found.TrySetResult(new BleDeviceInfo(address, FormatDeviceName(name, match)));
+                }
+            }
+
+            var watch = await device.WatchPropertiesChangedAsync(props =>
+            {
+                // Device1 objects and their ManufacturerData are cached by
+                // BlueZ.  Do not treat that snapshot as a new advertisement;
+                // only a property change received after StartDiscovery may
+                // complete the scan.
+                if (!props.HasManufacturerDataChanged || props.ManufacturerData is not { } data ||
+                    !TryMatch(data, out var match))
+                {
+                    return;
+                }
+
+                found.TrySetResult(new BleDeviceInfo(address, FormatDeviceName(name, match)));
+            }, emitOnCapturedContext: false).ConfigureAwait(false);
+            watches.Add(watch);
+        }
+
+        foreach (var path in knownPaths)
+        {
+            await WatchDeviceAsync(path, processCurrentAdvertisement: false).ConfigureAwait(false);
+        }
+
         await adapter.StartDiscoveryAsync().WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            while (true)
+            while (!found.Task.IsCompleted)
             {
                 ct.ThrowIfCancellationRequested();
-                var objects = await Manager.GetManagedObjectsAsync().WaitAsync(ct).ConfigureAwait(false);
+                objects = await Manager.GetManagedObjectsAsync().WaitAsync(ct).ConfigureAwait(false);
                 foreach (var (path, interfaces) in objects)
                 {
-                    if (!interfaces.ContainsKey(DeviceInterface))
+                    if (!interfaces.ContainsKey(DeviceInterface) || !knownPaths.Add(path))
                     {
                         continue;
                     }
 
-                    var device = Service.CreateDevice1(path);
-                    var properties = await device.GetNullablePropertiesAsync().WaitAsync(ct).ConfigureAwait(false);
-                    if (properties.ManufacturerData is not { } manufacturerData || !TryMatch(manufacturerData, out var match))
-                    {
-                        continue;
-                    }
-
-                    var address = BluetoothAddress.Parse(await device.GetAddressAsync().WaitAsync(ct).ConfigureAwait(false));
-                    var name = await GetDeviceNameAsync(device, match).ConfigureAwait(false);
-                    return new BleDeviceInfo(address, name);
+                    await WatchDeviceAsync(path, processCurrentAdvertisement: true).ConfigureAwait(false);
                 }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(250), ct).ConfigureAwait(false);
             }
+
+            return await found.Task.WaitAsync(ct).ConfigureAwait(false);
         }
         finally
         {
+            foreach (var watch in watches)
+            {
+                watch.Dispose();
+            }
             try
             {
                 await adapter.StopDiscoveryAsync().ConfigureAwait(false);
@@ -279,7 +321,7 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
         return false;
     }
 
-    private static async Task<string> GetDeviceNameAsync(Device1 device, Switch2ProAdvertisement match)
+    private static async Task<string> GetDeviceNameAsync(Device1 device)
     {
         try
         {
@@ -292,6 +334,9 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
         catch (DBusErrorReplyException)
         {
         }
-        return $"Switch 2 Pro Controller ({match.ModeName})";
+        return string.Empty;
     }
+
+    private static string FormatDeviceName(string name, Switch2ProAdvertisement match) =>
+        string.IsNullOrWhiteSpace(name) ? $"Switch 2 Pro Controller ({match.ModeName})" : name;
 }
