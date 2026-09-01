@@ -5,13 +5,13 @@ using Windows.Storage.Streams;
 
 namespace Ns2Pro.BleBridge;
 
-internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) : IControllerCommandChannel, IAsyncDisposable
+internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) : IAsyncDisposable
 {
-    public static readonly Guid InitUuid = Guid.Parse("00c5af5d-1964-4e30-8f51-1956f96bd282");
-    public static readonly Guid InputUuid = Guid.Parse("ab7de9be-89fe-49ad-828f-118f09df7fd2");
-    public static readonly Guid VibrationUuid = Guid.Parse("cc483f51-9258-427d-a939-630c31f72b05");
-    public static readonly Guid CommandUuid = Guid.Parse("649d4ac9-8eb7-4e6c-af44-1ea54fe5f005");
-    public static readonly Guid CommandResponseUuid = Guid.Parse("c765a961-d9d8-4d36-a20a-5315b111836a");
+    private static readonly Guid s_initUuid = Guid.Parse("00c5af5d-1964-4e30-8f51-1956f96bd282");
+    private static readonly Guid s_inputUuid = Guid.Parse("ab7de9be-89fe-49ad-828f-118f09df7fd2");
+    private static readonly Guid s_vibrationUuid = Guid.Parse("cc483f51-9258-427d-a939-630c31f72b05");
+    private static readonly Guid s_commandUuid = Guid.Parse("649d4ac9-8eb7-4e6c-af44-1ea54fe5f005");
+    private static readonly Guid s_commandResponseUuid = Guid.Parse("c765a961-d9d8-4d36-a20a-5315b111836a");
 
     private readonly Dictionary<Guid, GattCharacteristic> _characteristics = [];
     private readonly SemaphoreSlim _commandSemaphore = new(1, 1);
@@ -19,7 +19,57 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) 
     private BluetoothLEPreferredConnectionParametersRequest? _connectionRequest;
     private TaskCompletionSource<byte[]> _nextCommandResponse = NewResponseSource();
 
-    public void RequestThroughputOptimized()
+    public async Task InitializeAsync(CancellationToken ct)
+    {
+        RequestThroughputOptimized();
+        await DiscoverAsync(ct).ConfigureAwait(false);
+        await WriteAsync(s_initUuid, [0x01, 0x00], ct).ConfigureAwait(false);
+        await EnableNotificationsAsync(s_commandResponseUuid, OnCommandResponse, ct).ConfigureAwait(false);
+    }
+
+    public Task EnableInputReportsAsync(Action<byte[]> handler, CancellationToken ct) =>
+        EnableNotificationsAsync(s_inputUuid, (_, args) => handler(BufferReader.ReadBytes(args.CharacteristicValue)), ct);
+
+    public async Task<byte[]> SendCommandAsync(byte[] command, CancellationToken ct)
+    {
+        await _commandSemaphore.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var responseSource = NewResponseSource();
+            _nextCommandResponse = responseSource;
+            await WriteAsync(s_commandUuid, command, ct).ConfigureAwait(false);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+            await using var _ = linked.Token.Register(static state => ((TaskCompletionSource<byte[]>)state!).TrySetCanceled(), responseSource);
+            return await responseSource.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            _commandSemaphore.Release();
+        }
+    }
+
+    public Task WriteVibrationAsync(byte[] packet, CancellationToken ct) =>
+        WriteAsync(s_vibrationUuid, packet, ct);
+
+    public ValueTask DisposeAsync()
+    {
+        foreach (var (uuid, handler) in _handlers)
+        {
+            if (_characteristics.TryGetValue(uuid, out var ch))
+            {
+                ch.ValueChanged -= handler;
+            }
+        }
+
+        _handlers.Clear();
+        _connectionRequest?.Dispose();
+        _connectionRequest = null;
+        _commandSemaphore.Dispose();
+        return ValueTask.CompletedTask;
+    }
+
+    private void RequestThroughputOptimized()
     {
         try
         {
@@ -32,7 +82,7 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) 
         }
     }
 
-    public async Task DiscoverAsync(CancellationToken ct)
+    private async Task DiscoverAsync(CancellationToken ct)
     {
         var result = await device.GetGattServicesAsync(BluetoothCacheMode.Uncached).AsTask(ct).ConfigureAwait(false);
         if (result.Status != GattCommunicationStatus.Success)
@@ -54,7 +104,7 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) 
             }
         }
 
-        foreach (var required in new[] { InitUuid, InputUuid, VibrationUuid, CommandUuid, CommandResponseUuid })
+        foreach (var required in new[] { s_initUuid, s_inputUuid, s_vibrationUuid, s_commandUuid, s_commandResponseUuid })
         {
             if (!_characteristics.ContainsKey(required))
             {
@@ -63,37 +113,7 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) 
         }
     }
 
-    public Task EnableCommandResponsesAsync(CancellationToken ct) =>
-        EnableNotificationsAsync(CommandResponseUuid, OnCommandResponse, ct);
-
-    public Task EnableInputReportsAsync(
-        TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs> handler,
-        CancellationToken ct) =>
-        EnableNotificationsAsync(InputUuid, handler, ct);
-
-    public async Task<byte[]> SendCommandAsync(byte[] command, CancellationToken ct)
-    {
-        await _commandSemaphore.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            var responseSource = NewResponseSource();
-            _nextCommandResponse = responseSource;
-            await WriteAsync(CommandUuid, command, ct).ConfigureAwait(false);
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
-            await using var _ = linked.Token.Register(static state => ((TaskCompletionSource<byte[]>)state!).TrySetCanceled(), responseSource);
-            return await responseSource.Task.ConfigureAwait(false);
-        }
-        finally
-        {
-            _commandSemaphore.Release();
-        }
-    }
-
-    public Task WriteVibrationAsync(byte[] packet, CancellationToken ct) =>
-        WriteAsync(VibrationUuid, packet, ct);
-
-    public async Task WriteAsync(Guid uuid, byte[] data, CancellationToken ct)
+    private async Task WriteAsync(Guid uuid, byte[] data, CancellationToken ct)
     {
         using var writer = new DataWriter();
         writer.WriteBytes(data);
@@ -102,23 +122,6 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) 
         {
             throw new InvalidOperationException($"GATT write failed for {uuid}: {status}");
         }
-    }
-
-    public ValueTask DisposeAsync()
-    {
-        foreach (var (uuid, handler) in _handlers)
-        {
-            if (_characteristics.TryGetValue(uuid, out var ch))
-            {
-                ch.ValueChanged -= handler;
-            }
-        }
-
-        _handlers.Clear();
-        _connectionRequest?.Dispose();
-        _connectionRequest = null;
-        _commandSemaphore.Dispose();
-        return ValueTask.CompletedTask;
     }
 
     private async Task EnableNotificationsAsync(Guid uuid, TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs> handler, CancellationToken ct)

@@ -8,7 +8,7 @@ internal sealed class ControllerSessionConnector(CliOptions options, Logger logg
 
     private readonly record struct DeviceResolution(ulong Address, DeviceSource Source);
 
-    public async Task<ControllerSession> ConnectAsync(CancellationToken ct)
+    public async Task<BleController> ConnectAsync(CancellationToken ct)
     {
         var resolution = await ResolveDeviceAddressAsync(ct).ConfigureAwait(false);
         var controller = new BleController(logger, options.FeatureFlags);
@@ -27,12 +27,12 @@ internal sealed class ControllerSessionConnector(CliOptions options, Logger logg
             }
 
             CachedControllerStore.Save(options.CacheFile, resolution.Address);
-            return new ControllerSession(controller, resolution.Address);
+            return controller;
         }
         catch
         {
             await controller.DisposeAsync().ConfigureAwait(false);
-            if (resolution.Source == DeviceSource.Cache)
+            if (resolution.Source == DeviceSource.Cache && !ct.IsCancellationRequested)
             {
                 CachedControllerStore.Delete(options.CacheFile);
                 logger.Warn("Cached BLE controller did not connect; cache cleared so the next retry can scan for a pairing controller.");

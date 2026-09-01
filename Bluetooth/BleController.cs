@@ -1,7 +1,6 @@
 using System.Buffers.Binary;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
-using Windows.Devices.Bluetooth.GenericAttributeProfile;
 
 namespace Ns2Pro.BleBridge;
 
@@ -25,6 +24,8 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
     private long _lastAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false);
 
     public event Action<NS2ProInputState>? InputReceived;
+
+    public ulong Address { get; private set; }
 
     public Task Disconnected => _disconnected.Task;
 
@@ -65,15 +66,13 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
 
     public async Task ConnectAndInitializeAsync(ulong address, CancellationToken ct)
     {
+        Address = address;
         _device = await BluetoothLEDevice.FromBluetoothAddressAsync(address).AsTask(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Could not connect to BLE device {BluetoothAddress.Format(address)}.");
 
         _transport = new BleGattTransport(_device, logger);
-        _transport.RequestThroughputOptimized();
-        await _transport.DiscoverAsync(ct).ConfigureAwait(false);
+        await _transport.InitializeAsync(ct).ConfigureAwait(false);
 
-        await _transport.WriteAsync(BleGattTransport.InitUuid, [0x01, 0x00], ct).ConfigureAwait(false);
-        await _transport.EnableCommandResponsesAsync(ct).ConfigureAwait(false);
         await SetPlayerLedsAsync(NS2ProProtocol.DefaultLedPattern, ct).ConfigureAwait(false);
         await LoadStickCalibrationAsync(ct).ConfigureAwait(false);
         await SendCommandAsync(NS2ProProtocol.Command(0x0C, 0x02, [0xFF, 0, 0, 0]), ct).ConfigureAwait(false);
@@ -86,22 +85,14 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
         }
     }
 
-    public async Task<byte[]> SendCommandAsync(byte[] command, CancellationToken ct)
+    public Task<byte[]> SendCommandAsync(byte[] command, CancellationToken ct)
     {
         if (_transport is not { } transport)
         {
             throw new InvalidOperationException("BLE controller is not initialized.");
         }
 
-        try
-        {
-            return await transport.SendCommandAsync(command, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ShouldMarkDisconnected(ex, ct))
-        {
-            MarkDisconnected($"BLE command failed: {ex.Message}");
-            throw;
-        }
+        return transport.SendCommandAsync(command, ct);
     }
 
     public Task SetPlayerLedsAsync(byte mask, CancellationToken ct) =>
@@ -179,7 +170,6 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
             catch (Exception ex)
             {
                 logger.Debug($"Rumble write failed: {ex.Message}");
-                MarkDisconnected($"Rumble write failed: {ex.Message}");
             }
         }
     }
@@ -244,11 +234,10 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
         return payload[8..(8 + n)].ToArray();
     }
 
-    private void OnInputReport(GattCharacteristic sender, GattValueChangedEventArgs args)
+    private void OnInputReport(byte[] data)
     {
         try
         {
-            var data = BufferReader.ReadBytes(args.CharacteristicValue);
             Interlocked.Increment(ref _inputReportCount);
             ReportStatsIfDue();
             var state = NS2ProProtocol.ParseCommonReport(data, _primaryStick, _secondaryStick);
@@ -283,9 +272,6 @@ internal sealed class BleController(Logger logger, byte featureFlags) : IControl
             logger.Warn(reason);
         }
     }
-
-    private static bool ShouldMarkDisconnected(Exception ex, CancellationToken ct) =>
-        ex is not OperationCanceledException || !ct.IsCancellationRequested;
 
     private void ReportStatsIfDue()
     {

@@ -28,19 +28,19 @@ internal sealed class ControllerSessionRunner(
 
     private async Task RunSessionAsync(CancellationToken ct)
     {
-        await using var session = await connector.ConnectAsync(ct).ConfigureAwait(false);
+        await using var controller = await connector.ConnectAsync(ct).ConfigureAwait(false);
         try
         {
-            session.Controller.InputReceived += server.Update;
-            server.SetOutputTarget(session.Controller);
+            controller.InputReceived += server.Update;
+            server.SetOutputTarget(controller);
             logger.Info("BLE controller initialized.");
-            await session.WaitForDisconnectAsync(ct).ConfigureAwait(false);
-            logger.Warn($"BLE controller {BluetoothAddress.Format(session.Address)} disconnected; reconnecting.");
+            await controller.Disconnected.WaitAsync(ct).ConfigureAwait(false);
+            logger.Warn($"BLE controller {BluetoothAddress.Format(controller.Address)} disconnected; reconnecting.");
         }
         finally
         {
             server.SetOutputTarget(null);
-            session.Controller.InputReceived -= server.Update;
+            controller.InputReceived -= server.Update;
         }
     }
 

@@ -41,7 +41,20 @@ internal static unsafe class NativeOutputRouter
 
         if ((flags & NS2ProProtocol.OutputFlagLed) != 0)
         {
-            _ = Task.Run(() => NativeOutputRunner.RunLedOutputAsync(target, playerLedMask));
+            _ = Task.Run(() => RunLedOutputAsync(target, playerLedMask));
+        }
+    }
+
+    private static async Task RunLedOutputAsync(IControllerOutputTarget target, byte playerLedMask)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await target.SetPlayerLedsAsync(playerLedMask, cts.Token).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Native output callbacks cannot surface async failures safely.
         }
     }
 }
