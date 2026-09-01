@@ -6,8 +6,6 @@ namespace Ns2Pro.BleBridge;
 
 internal sealed class WindowsBluetoothBackend(Logger logger) : IBluetoothBackend
 {
-    public bool SupportsHostPairing => true;
-
     public async Task<BleDeviceInfo> ScanAsync(CancellationToken ct)
     {
         var watcher = new BluetoothLEAdvertisementWatcher

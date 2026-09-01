@@ -16,7 +16,7 @@ internal sealed class ControllerSessionConnector(CliOptions options, IBluetoothB
             logger.Info($"Connecting BLE controller {BluetoothAddress.Format(resolution.Address)}.");
             await controller.ConnectAndInitializeAsync(backend, resolution.Address, ct).ConfigureAwait(false);
 
-            if (backend.SupportsHostPairing && ShouldPairHost(resolution))
+            if (ShouldPairHost(resolution))
             {
                 var host = options.HostAddress ?? await backend.GetAdapterAddressAsync(ct).ConfigureAwait(false);
                 logger.Info($"Pairing controller to local host {BluetoothAddress.Format(host)}.");
