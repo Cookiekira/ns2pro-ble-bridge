@@ -82,11 +82,39 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
 
     public async Task<IBleTransport> ConnectAsync(ulong address, CancellationToken ct)
     {
-        await GetAdapterAsync(ct).ConfigureAwait(false);
+        var (adapter, adapterPath) = await GetAdapterAsync(ct).ConfigureAwait(false);
         var path = await FindDevicePathAsync(address, ct).ConfigureAwait(false);
         var device = Service.CreateDevice1(path);
-        await device.ConnectAsync().WaitAsync(ct).ConfigureAwait(false);
-        return await BluezGattTransport.CreateAsync(_connection, Service, Manager, device, path, _logger, ct).ConfigureAwait(false);
+
+        // Do not call Device1.Connect here.  BlueZ's GATT proxy attempts a
+        // normal service discovery (and may start SMP), which causes Switch 2
+        // controllers to drop the link before any characteristics are exposed.
+        // The raw ATT transport owns the LE connection and keeps security low.
+        try
+        {
+            await adapter.StopDiscoveryAsync().WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.Debug($"Could not stop BlueZ discovery before raw ATT connect: {ex.Message}");
+        }
+
+        if (await device.GetConnectedAsync().WaitAsync(ct).ConfigureAwait(false))
+        {
+            try
+            {
+                await device.DisconnectAsync().WaitAsync(ct).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromMilliseconds(150), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug($"Could not clear the existing BlueZ connection: {ex.Message}");
+            }
+        }
+
+        var adapterAddress = BluetoothAddress.Parse(
+            await Service.CreateAdapter1(adapterPath).GetAddressAsync().WaitAsync(ct).ConfigureAwait(false));
+        return await BluezRawGattTransport.CreateAsync(adapterAddress, address, _logger, ct).ConfigureAwait(false);
     }
 
     public async Task<ulong> GetAdapterAddressAsync(CancellationToken ct)
