@@ -1,23 +1,32 @@
 # NS2Pro BLE Bridge
 
-Windows CLI for bridging a Switch 2 Pro Controller over BLE to a virtual USB NS2Pro device.
+Cross-platform CLI for bridging a Switch 2 Pro Controller over BLE to a virtual USB NS2Pro device.
 
 ## Requirements
 
-- Windows x64
-- [usbip-win2](https://github.com/vadimgrn/usbip-win2) installed on the system
+- Windows x64 with [usbip-win2](https://github.com/vadimgrn/usbip-win2), or
+- Linux x64/ARM64 with BlueZ, the distribution's USB/IP tools, and the `vhci-hcd` kernel module
 
 ## Usage
 
-Install `usbip-win2` first; the bridge uses it to attach the virtual USB NS2Pro
-device to the local Windows USB bus.
+Install the platform USB/IP prerequisites first; the bridge uses them to attach the
+virtual USB NS2Pro device to the local USB bus. Linux setup is described in
+[Linux setup](#linux-setup).
 
 Download `Ns2Pro.BleBridge-v0.1.1-win-x64.exe` from the
 [latest GitHub Release](https://github.com/Cookiekira/ns2pro-ble-bridge/releases/latest).
-Put the controller into Bluetooth pairing mode, then run the downloaded executable:
+Put the controller into Bluetooth pairing mode, then run the downloaded executable.
+On Windows:
 
 ```powershell
 .\Ns2Pro.BleBridge-v0.1.1-win-x64.exe
+```
+
+On Linux:
+
+```bash
+chmod +x Ns2Pro.BleBridge-v0.1.1-linux-x64
+./Ns2Pro.BleBridge-v0.1.1-linux-x64
 ```
 
 On first use, the bridge scans for a pairing Switch 2 Pro Controller, connects to it,
@@ -34,27 +43,80 @@ Options:
 | `--pair-host` | Pair a cached or explicit controller again | Disabled |
 | `--host-address <mac>` | Override local Bluetooth adapter address for host pairing | Auto-detected |
 | `--forget-device` | Clear the cached BLE controller address | Disabled |
-| `--cache-file <path>` | Controller cache path | `%LOCALAPPDATA%\Ns2Pro.BleBridge\controller-cache.json` |
+| `--cache-file <path>` | Controller cache path | Platform local application-data directory |
 | `--no-auto-attach` | Do not automatically attach to the local USB bus | Disabled |
 | `--feature-flags <flags>` | Feature flags to enable | `0x07` |
 | `--log-level <level>` | Log level: `Trace`, `Debug`, `Info`, `Warn`, `Error` | `Info` |
 | `-h`, `--help` | Show help | |
+
+## Linux setup
+
+The bridge talks to BlueZ over the system D-Bus and keeps VIIPER in-process. It does
+not require a separate VIIPER server. Ensure Bluetooth is enabled and the user can
+access the system BlueZ service.
+
+Install USB/IP and load its virtual host-controller driver:
+
+```bash
+# Ubuntu/Debian
+sudo apt install bluez linux-tools-generic
+
+# Fedora
+sudo dnf install bluez usbip
+
+# Arch Linux
+sudo pacman -S bluez bluez-utils usbip
+
+sudo modprobe vhci-hcd
+```
+
+The automatic local USB/IP attach normally needs elevated permission. Run the bridge
+with appropriate local policy/capabilities, or use `--no-auto-attach` and attach the
+export manually or from a remote USB/IP client. A typical manual local flow is:
+
+```bash
+./Ns2Pro.BleBridge-v0.1.1-linux-x64 --no-auto-attach
+sudo usbip attach -r localhost -b <bus-id>
+```
+
+### Manual startup
+
+The bridge is intentionally run by hand for now. VIIPER starts its USB/IP server
+and performs the local `vhci-hcd` attach in-process; no separate USB/IP client or
+systemd unit is needed.
+
+```bash
+sudo modprobe vhci-hcd
+./Ns2Pro.BleBridge-v0.1.1-linux-x64
+```
+
+On first use, put the controller in Bluetooth pairing mode. The bridge discovers it,
+runs the NS2Pro host-pairing exchange using the selected adapter's address, and stores
+the controller address. Later runs reconnect from that cache. Use `--pair-host` to
+repeat host pairing, `--forget-device` to clear the cache, or `--device-address` and
+`--host-address` for explicit overrides.
+
+For hardware validation, follow the [Linux manual acceptance checklist](docs/linux-hardware-checklist.md).
 
 ## Build from source
 
 Build requirements:
 
 - .NET10 SDK
-- Windows SDK `10.0.26100.0`
+- Windows SDK `10.0.26100.0` when publishing `win-x64`
+- A C compiler supported by Go's `c-shared` build mode
 - Go toolchain
 - VIIPER submodule initialized
 
 Clone the repository with submodules, then publish the bridge:
 
-```powershell
+```bash
 git clone --recurse-submodules https://github.com/Cookiekira/ns2pro-ble-bridge.git
 cd ns2pro-ble-bridge
-dotnet publish .\Ns2Pro.BleBridge.csproj -c Release -r win-x64
+dotnet publish Ns2Pro.BleBridge.csproj -c Release -r linux-x64
+dotnet publish Ns2Pro.BleBridge.csproj -c Release -r linux-arm64
+# On Windows:
+dotnet publish Ns2Pro.BleBridge.csproj -c Release -r win-x64
 ```
 
 If you already cloned the repository without submodules, initialize VIIPER before
@@ -64,17 +126,16 @@ building:
 git submodule update --init --recursive
 ```
 
-By default, the build uses `vendor\VIIPER`. To build against a different VIIPER
+By default, the build uses `vendor/VIIPER`. To build against a different VIIPER
 checkout, set `VIIPER_SOURCE_ROOT` or pass the path as an MSBuild property:
 
-```powershell
-$env:VIIPER_SOURCE_ROOT = "C:\path\to\VIIPER"
-dotnet publish .\Ns2Pro.BleBridge.csproj -c Release -r win-x64
-
-dotnet publish .\Ns2Pro.BleBridge.csproj -c Release -r win-x64 /p:ViiperSourceRoot=C:\path\to\VIIPER
+```bash
+VIIPER_SOURCE_ROOT=/path/to/VIIPER dotnet publish Ns2Pro.BleBridge.csproj -c Release -r linux-x64
+dotnet publish Ns2Pro.BleBridge.csproj -c Release -r linux-x64 /p:ViiperSourceRoot=/path/to/VIIPER
 ```
 
-The build compiles `lib\viiper` as `libVIIPER.dll` and embeds it in the published executable.
+The build compiles `lib/viiper` as `libVIIPER.dll` on Windows or `libVIIPER.so` on
+Linux and embeds the platform library in the published executable.
 
 ## Credits
 

@@ -38,37 +38,79 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
         }).WaitAsync(ct).ConfigureAwait(false);
 
         _logger.Info("Scanning for Switch 2 Pro Controller through BlueZ.");
+        var objects = await Manager.GetManagedObjectsAsync().WaitAsync(ct).ConfigureAwait(false);
+        var knownPaths = objects
+            .Where(pair => pair.Value.ContainsKey(DeviceInterface))
+            .Select(pair => pair.Key)
+            .ToHashSet();
+        var watches = new List<IDisposable>();
+        var found = new TaskCompletionSource<BleDeviceInfo>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task WatchDeviceAsync(ObjectPath path, bool processCurrentAdvertisement)
+        {
+            var device = Service.CreateDevice1(path);
+            var address = BluetoothAddress.Parse(await device.GetAddressAsync().WaitAsync(ct).ConfigureAwait(false));
+            var name = await GetDeviceNameAsync(device).ConfigureAwait(false);
+
+            if (processCurrentAdvertisement)
+            {
+                var current = await device.GetNullablePropertiesAsync().WaitAsync(ct).ConfigureAwait(false);
+                if (current.ManufacturerData is { } manufacturerData && TryMatch(manufacturerData, out var match))
+                {
+                    found.TrySetResult(new BleDeviceInfo(address, FormatDeviceName(name, match)));
+                }
+            }
+
+            var watch = await device.WatchPropertiesChangedAsync(props =>
+            {
+                // Device1 objects and their ManufacturerData are cached by
+                // BlueZ.  Do not treat that snapshot as a new advertisement;
+                // only a property change received after StartDiscovery may
+                // complete the scan.
+                if (!props.HasManufacturerDataChanged || props.ManufacturerData is not { } data ||
+                    !TryMatch(data, out var match))
+                {
+                    return;
+                }
+
+                found.TrySetResult(new BleDeviceInfo(address, FormatDeviceName(name, match)));
+            }, emitOnCapturedContext: false).ConfigureAwait(false);
+            watches.Add(watch);
+        }
+
+        foreach (var path in knownPaths)
+        {
+            await WatchDeviceAsync(path, processCurrentAdvertisement: false).ConfigureAwait(false);
+        }
+
         await adapter.StartDiscoveryAsync().WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            while (true)
+            while (!found.Task.IsCompleted)
             {
                 ct.ThrowIfCancellationRequested();
-                var objects = await Manager.GetManagedObjectsAsync().WaitAsync(ct).ConfigureAwait(false);
+                objects = await Manager.GetManagedObjectsAsync().WaitAsync(ct).ConfigureAwait(false);
                 foreach (var (path, interfaces) in objects)
                 {
-                    if (!interfaces.ContainsKey(DeviceInterface))
+                    if (!interfaces.ContainsKey(DeviceInterface) || !knownPaths.Add(path))
                     {
                         continue;
                     }
 
-                    var device = Service.CreateDevice1(path);
-                    var properties = await device.GetNullablePropertiesAsync().WaitAsync(ct).ConfigureAwait(false);
-                    if (properties.ManufacturerData is not { } manufacturerData || !TryMatch(manufacturerData, out var match))
-                    {
-                        continue;
-                    }
-
-                    var address = BluetoothAddress.Parse(await device.GetAddressAsync().WaitAsync(ct).ConfigureAwait(false));
-                    var name = await GetDeviceNameAsync(device, match).ConfigureAwait(false);
-                    return new BleDeviceInfo(address, name);
+                    await WatchDeviceAsync(path, processCurrentAdvertisement: true).ConfigureAwait(false);
                 }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(250), ct).ConfigureAwait(false);
             }
+
+            return await found.Task.WaitAsync(ct).ConfigureAwait(false);
         }
         finally
         {
+            foreach (var watch in watches)
+            {
+                watch.Dispose();
+            }
             try
             {
                 await adapter.StopDiscoveryAsync().ConfigureAwait(false);
@@ -82,17 +124,64 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
 
     public async Task<IBleTransport> ConnectAsync(ulong address, CancellationToken ct)
     {
-        await GetAdapterAsync(ct).ConfigureAwait(false);
+        var (adapter, adapterPath) = await GetAdapterAsync(ct).ConfigureAwait(false);
         var path = await FindDevicePathAsync(address, ct).ConfigureAwait(false);
         var device = Service.CreateDevice1(path);
-        await device.ConnectAsync().WaitAsync(ct).ConfigureAwait(false);
-        return await BluezGattTransport.CreateAsync(_connection, Service, Manager, device, path, _logger, ct).ConfigureAwait(false);
+
+        // Do not call Device1.Connect here.  BlueZ's GATT proxy attempts a
+        // normal service discovery (and may start SMP), which causes Switch 2
+        // controllers to drop the link before any characteristics are exposed.
+        // The raw ATT transport owns the LE connection and keeps security low.
+        try
+        {
+            await adapter.StopDiscoveryAsync().WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.Debug($"Could not stop BlueZ discovery before raw ATT connect: {ex.Message}");
+        }
+
+        if (await device.GetConnectedAsync().WaitAsync(ct).ConfigureAwait(false))
+        {
+            try
+            {
+                await device.DisconnectAsync().WaitAsync(ct).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromMilliseconds(150), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug($"Could not clear the existing BlueZ connection: {ex.Message}");
+            }
+        }
+
+        var adapterAddress = BluetoothAddress.Parse(
+            await Service.CreateAdapter1(adapterPath).GetAddressAsync().WaitAsync(ct).ConfigureAwait(false));
+        return await BluezRawGattTransport.CreateAsync(adapterAddress, address, _logger, ct).ConfigureAwait(false);
     }
 
     public async Task<ulong> GetAdapterAddressAsync(CancellationToken ct)
     {
         var (adapter, _) = await GetAdapterAsync(ct).ConfigureAwait(false);
         return BluetoothAddress.Parse(await adapter.GetAddressAsync().WaitAsync(ct).ConfigureAwait(false));
+    }
+
+    internal async Task SmokeTestAsync(CancellationToken ct)
+    {
+        var (adapter, _) = await GetAdapterAsync(ct).ConfigureAwait(false);
+        await adapter.SetDiscoveryFilterAsync(new Dictionary<string, VariantValue>
+        {
+            ["Transport"] = VariantValue.String("le")
+        }).WaitAsync(ct).ConfigureAwait(false);
+        await adapter.StartDiscoveryAsync().WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            await adapter.StopDiscoveryAsync().ConfigureAwait(false);
+        }
+        _logger.Info("BlueZ system-bus adapter/discovery smoke test passed.");
     }
 
     public ValueTask DisposeAsync()
@@ -232,7 +321,7 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
         return false;
     }
 
-    private static async Task<string> GetDeviceNameAsync(Device1 device, Switch2ProAdvertisement match)
+    private static async Task<string> GetDeviceNameAsync(Device1 device)
     {
         try
         {
@@ -245,6 +334,9 @@ internal sealed class BluezBluetoothBackend : IBluetoothBackend
         catch (DBusErrorReplyException)
         {
         }
-        return $"Switch 2 Pro Controller ({match.ModeName})";
+        return string.Empty;
     }
+
+    private static string FormatDeviceName(string name, Switch2ProAdvertisement match) =>
+        string.IsNullOrWhiteSpace(name) ? $"Switch 2 Pro Controller ({match.ModeName})" : name;
 }

@@ -7,8 +7,9 @@ namespace Ns2Pro.BleBridge;
 
 internal static class DllLoader
 {
-    private const string ResourceName = "Ns2Pro.BleBridge.Native.libVIIPER.dll";
     private const string LibraryName = "libVIIPER";
+    private static readonly string s_libraryFile = OperatingSystem.IsWindows() ? "libVIIPER.dll" : "libVIIPER.so";
+    private static readonly string s_resourceName = $"Ns2Pro.BleBridge.Native.{s_libraryFile}";
 
     [ModuleInitializer]
     internal static void Initialize()
@@ -23,15 +24,34 @@ internal static class DllLoader
             return IntPtr.Zero;
         }
 
-        var extracted = ExtractEmbeddedDll(assembly);
+        var extracted = ExtractEmbeddedLibrary(assembly);
         return NativeLibrary.Load(extracted);
     }
 
-    private static string ExtractEmbeddedDll(Assembly assembly)
+    internal static string VerifyEmbeddedLibrary()
     {
-        using var stream = assembly.GetManifestResourceStream(ResourceName)
+        var assembly = typeof(DllLoader).Assembly;
+        using (var stream = assembly.GetManifestResourceStream(s_resourceName)
+            ?? throw new DllNotFoundException($"{s_resourceName} is not embedded."))
+        {
+            Span<byte> magic = stackalloc byte[4];
+            if (stream.Read(magic) != magic.Length || !HasExpectedMagic(magic))
+            {
+                throw new BadImageFormatException($"Embedded {s_libraryFile} is not a valid library for this platform.");
+            }
+        }
+
+        var path = ExtractEmbeddedLibrary(assembly);
+        var handle = NativeLibrary.Load(path);
+        NativeLibrary.Free(handle);
+        return path;
+    }
+
+    private static string ExtractEmbeddedLibrary(Assembly assembly)
+    {
+        using var stream = assembly.GetManifestResourceStream(s_resourceName)
             ?? throw new DllNotFoundException(
-                $"{ResourceName} is not embedded. Build with /p:ViiperSourceRoot=<path-to-VIIPER> " +
+                $"{s_resourceName} is not embedded. Build with /p:ViiperSourceRoot=<path-to-VIIPER> " +
                 "or set VIIPER_SOURCE_ROOT.");
 
         using var sha = SHA256.Create();
@@ -46,7 +66,7 @@ internal static class DllLoader
             hash);
         Directory.CreateDirectory(dir);
 
-        var path = Path.Combine(dir, "libVIIPER.dll");
+        var path = Path.Combine(dir, s_libraryFile);
         if (!File.Exists(path) || new FileInfo(path).Length != bytes.Length)
         {
             var tempPath = Path.Combine(dir, $"{Guid.NewGuid():N}.tmp");
@@ -65,4 +85,9 @@ internal static class DllLoader
         }
         return path;
     }
+
+    private static bool HasExpectedMagic(ReadOnlySpan<byte> magic) =>
+        OperatingSystem.IsWindows()
+            ? magic[0] == (byte)'M' && magic[1] == (byte)'Z'
+            : magic.SequenceEqual(new byte[] { 0x7F, (byte)'E', (byte)'L', (byte)'F' });
 }

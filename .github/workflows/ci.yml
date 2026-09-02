@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux build and tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: vendor/VIIPER/go.mod
+
+      - name: Test
+        run: dotnet test Tests/Ns2Pro.BleBridge.Tests/Ns2Pro.BleBridge.Tests.csproj -r linux-x64
+
+      - name: Publish linux-x64 NativeAOT
+        run: dotnet publish Ns2Pro.BleBridge.csproj -c Release -r linux-x64 -p:ContinuousIntegrationBuild=true
+
+      - name: Verify native resource
+        run: bin/Release/net10.0/linux-x64/publish/Ns2Pro.BleBridge --verify-native-library
+
+      - name: BlueZ smoke test when service is available
+        shell: bash
+        run: |
+          if busctl --system --no-pager status org.bluez >/dev/null 2>&1; then
+            bin/Release/net10.0/linux-x64/publish/Ns2Pro.BleBridge --bluez-smoke-test
+          else
+            echo "BlueZ is not available on this runner; smoke test skipped."
+          fi
+
+  windows:
+    name: Windows compile
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: vendor/VIIPER/go.mod
+
+      - name: Publish win-x64 NativeAOT
+        run: dotnet publish Ns2Pro.BleBridge.csproj -c Release -r win-x64 -p:ContinuousIntegrationBuild=true
+
+      - name: Verify native resource
+        shell: pwsh
+        run: bin/Release/net10.0-windows10.0.26100.0/win-x64/publish/Ns2Pro.BleBridge.exe --verify-native-library
