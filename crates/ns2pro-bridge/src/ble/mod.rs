@@ -56,7 +56,7 @@ pub trait GattLink: 'static {
     fn close(&self) -> impl Future<Output = ()>;
 }
 
-#[cfg(windows)]
-pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(windows)]
+pub mod windows;

@@ -31,7 +31,13 @@ Host tools: rustc 1.100.0-nightly (0dfb098f3), cargo 1.100.0-nightly, clang-cl/L
 
 Native-specific tests exercise actual WinRT buffer allocation/IBufferByteAccess pointer identity and initialized length, actual owned Windows event-handle release, cancellation scope lifetime, failed GATT statuses, pre-import ABI retry classification, detach completion/idempotence, and five portable IOCTL byte/encoding/error tests. The latter also execute in Linux workspace tests. They do not replace production OS calls with success stubs.
 
-The core owner is adding the primary Fake Bluetooth plus in-memory USB/IP session harness and final application composition. Final integration must rerun this Windows-target build/test suite including that harness. Native Windows CI must still build and execute the suite on Windows: Wine is additional evidence, not Windows OS acceptance. No physical Windows Bluetooth adapter, controller, usbip-win2 kernel driver, wireless interval/latency, or virtual-device enumeration acceptance was performed or claimed. Driver ABI encoding and cleanup tests do not prove driver/hardware operation.
+Shared session harness `5942cad` was merged in `47982a0`, retaining both platform declarations. After that merge:
+
+- Windows-target all-target check and whole-workspace strict clippy both passed.
+- Windows-target workspace tests linked and **45 passed under Wine**, including all three shared session scenarios: complete notification-to-USB/output routing, pairing rejection/calibration fallback, and pending bulk/UNLINK/STALL with a partial USB/IP header.
+- Linux workspace tests: **44 passed**; formatting check passed after sorting merged module declarations.
+
+The core owner is completing final application composition. Final integration must rerun the Windows-target build/test suite after that wiring. Native Windows CI must still build and execute the suite on Windows: Wine is additional evidence, not Windows OS acceptance. No physical Windows Bluetooth adapter, controller, usbip-win2 kernel driver, wireless interval/latency, or virtual-device enumeration acceptance was performed or claimed. Driver ABI encoding and cleanup tests do not prove driver/hardware operation.
 
 ## Primary references
 
