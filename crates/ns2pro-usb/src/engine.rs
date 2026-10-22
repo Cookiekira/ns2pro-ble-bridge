@@ -25,7 +25,7 @@ impl Default for UrbEngine {
             device: Ns2ProDevice::default(),
             sample: InputSample::default(),
             dirty: true,
-            pending: VecDeque::new(),
+            pending: VecDeque::with_capacity(256),
             last_report: 0,
         }
     }
@@ -123,26 +123,29 @@ impl UrbEngine {
         let mut i = 0;
         while i < self.pending.len() {
             let u = self.pending[i];
-            let data = if u.ep == 2 {
-                self.device.pop_bulk_in()
-            } else if self.dirty || (keepalive && now >= self.last_report.saturating_add(4000)) {
+            if u.ep == 1
+                && (self.dirty || (keepalive && now >= self.last_report.saturating_add(4000)))
+            {
                 let p = self.device.interrupt_in(&self.sample);
                 if !self.dirty {
-                    e.keepalives += 1
+                    e.keepalives += 1;
                 }
                 self.dirty = false;
                 self.last_report = now;
                 e.input_completions += 1;
-                Some(p.to_vec())
-            } else {
-                None
-            };
-            if let Some(mut p) = data {
                 self.pending.remove(i);
-                p.truncate(u.length);
-                reply_into(&mut e.replies, u, 0, &p, p.len());
+                let n = u.length.min(p.len());
+                reply_into(&mut e.replies, u, 0, &p[..n], n);
+            } else if u.ep == 2 {
+                if let Some(mut p) = self.device.pop_bulk_in() {
+                    self.pending.remove(i);
+                    p.truncate(u.length);
+                    reply_into(&mut e.replies, u, 0, &p, p.len());
+                } else {
+                    i += 1;
+                }
             } else {
-                i += 1
+                i += 1;
             }
         }
     }
