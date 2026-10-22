@@ -6,8 +6,7 @@ fn hex(s: &Value) -> Vec<u8> {
 }
 #[test]
 fn control_fixtures() {
-    let rows: Value =
-        serde_json::from_str(include_str!("fixtures/viiper/control.json")).unwrap();
+    let rows: Value = serde_json::from_str(include_str!("fixtures/viiper/control.json")).unwrap();
     let mut device = Ns2ProDevice::default();
     for row in rows.as_array().unwrap() {
         let name = row["name"].as_str().unwrap();
@@ -49,8 +48,7 @@ fn state(s: &Value) -> ns2pro_proto::InputState {
 }
 #[test]
 fn all_scenario_fixtures() {
-    let rows: Value =
-        serde_json::from_str(include_str!("fixtures/viiper/scenarios.json")).unwrap();
+    let rows: Value = serde_json::from_str(include_str!("fixtures/viiper/scenarios.json")).unwrap();
     for scenario in rows.as_array().unwrap() {
         let mut d = Ns2ProDevice::default();
         let mut sample = InputSample::default();
@@ -139,8 +137,7 @@ fn all_scenario_fixtures() {
 }
 #[test]
 fn management_fixtures() {
-    let rows: Value =
-        serde_json::from_str(include_str!("fixtures/viiper/usbip.json")).unwrap();
+    let rows: Value = serde_json::from_str(include_str!("fixtures/viiper/usbip.json")).unwrap();
     assert_eq!(management_reply(5, true), hex(&rows["devlist"]));
     assert_eq!(management_reply(3, true), hex(&rows["import"]));
     assert_eq!(&management_reply(3, false), &[1, 0x11, 0, 3, 0, 0, 0, 1]);
