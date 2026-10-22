@@ -94,8 +94,11 @@ impl Statistics {
             rumble_hz = self.rumble_writes as f64 / secs,
             target_interval = ?self.connection.target,
             preference_result = ?self.connection.preference,
-            observed_interval = %self.connection.observed_interval
-                .map(|units| units.to_string()).unwrap_or_else(|| "unknown".into()),
+            observed_interval_ms = %self
+                .connection
+                .observed_interval
+                .map(|units| (f64::from(units) * 1.25).to_string())
+                .unwrap_or_else(|| "unknown".into()),
             "bridge statistics (receipt to completed socket write; excludes BLE and host)"
         );
     }
