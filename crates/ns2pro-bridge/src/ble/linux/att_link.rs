@@ -4,7 +4,10 @@ use ns2pro_proto::{
     att::{self, Discovery, Handles, Packet},
     gatt::Characteristic,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU16, Ordering},
+};
 use tokio::{
     sync::{Mutex as AsyncMutex, oneshot},
     task::JoinHandle,
@@ -13,6 +16,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 struct Shared {
     socket: Socket,
+    peer_mtu: AtomicU16,
     pending: Mutex<Option<oneshot::Sender<Vec<u8>>>>,
     sinks: Mutex<Vec<(u16, NotificationSink)>>,
     transaction: AsyncMutex<()>,
@@ -72,6 +76,7 @@ impl AttLink {
     pub(super) async fn open(socket: Socket) -> Result<Self, LinkError> {
         let shared = Arc::new(Shared {
             socket,
+            peer_mtu: AtomicU16::new(att::MTU),
             pending: Mutex::new(None),
             sinks: Mutex::new(vec![]),
             transaction: AsyncMutex::new(()),
@@ -128,7 +133,8 @@ impl Drop for AttLink {
 }
 impl GattLink for AttLink {
     async fn write(&self, c: Characteristic, value: &[u8]) -> Result<(), LinkError> {
-        if value.len() + 3 > usize::from(self.mtu) {
+        if value.len() + 3 > usize::from(self.mtu.min(self.shared.peer_mtu.load(Ordering::Relaxed)))
+        {
             return Err(LinkError::Platform(
                 "write exceeds negotiated ATT MTU".into(),
             ));
@@ -198,6 +204,7 @@ async fn read_loop(shared: &Shared) {
                 if indication { Some(vec![0x1e]) } else { None }
             }
             Packet::Mtu(peer) => {
+                shared.peer_mtu.store(peer.min(att::MTU), Ordering::Relaxed);
                 tracing::debug!(peer_mtu = peer, "peer ATT MTU exchange");
                 Some(vec![3, 247, 0])
             }
@@ -230,6 +237,7 @@ mod tests {
         let (a, b) = super::super::socket::pair();
         let shared = Arc::new(Shared {
             socket: a,
+            peer_mtu: AtomicU16::new(att::MTU),
             pending: Mutex::new(None),
             sinks: Mutex::new(vec![]),
             transaction: AsyncMutex::new(()),
@@ -262,5 +270,102 @@ mod tests {
         drop(b);
         reader.await.unwrap();
         assert!(shared.closed.is_cancelled());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_or_timed_out_transaction_closes_untagged_link() {
+        let (a, b) = super::super::socket::pair();
+        let shared = Arc::new(Shared {
+            socket: a,
+            peer_mtu: AtomicU16::new(att::MTU),
+            pending: Mutex::new(None),
+            sinks: Mutex::new(vec![]),
+            transaction: AsyncMutex::new(()),
+            writer: AsyncMutex::new(()),
+            closed: CancellationToken::new(),
+        });
+        let transaction = shared.request(&[0x12, 1, 0, 1, 0]);
+        let peer = async {
+            let mut p = [0; 32];
+            assert_eq!(b.recv(&mut p).await.unwrap(), 5);
+            tokio::time::advance(Duration::from_secs(2)).await;
+        };
+        let (result, ()) = tokio::join!(transaction, peer);
+        assert!(matches!(result, Err(LinkError::Timeout)));
+        assert!(shared.closed.is_cancelled());
+        let mut p = [0; 32];
+        assert_eq!(b.recv(&mut p).await.unwrap(), 0);
+    }
+    #[tokio::test]
+    async fn discovers_real_handles_subscribes_and_writes_wire_bytes() {
+        let (socket, peer) = super::super::socket::pair();
+        let server = async {
+            let mut p = [0; 512];
+            for _ in 0..7 {
+                let n = peer.recv(&mut p).await.unwrap();
+                let request = &p[..n];
+                let response = match request[0] {
+                    2 => vec![3, 247, 0],
+                    0x10 if request[1..3] == [1, 0] => vec![0x11, 6, 1, 0, 40, 0, 0, 0x18],
+                    0x10 => vec![1, 0x10, 41, 0, 10],
+                    8 if request[1..3] == [1, 0] => {
+                        let mut response = vec![9, 21];
+                        for (i, c) in Characteristic::ALL.into_iter().enumerate() {
+                            let handle = 2 + i as u16 * 4;
+                            response.extend(handle.to_le_bytes());
+                            response.push(if Characteristic::NOTIFYING.contains(&c) {
+                                0x10
+                            } else {
+                                4
+                            });
+                            response.extend((handle + 1).to_le_bytes());
+                            let mut uuid = c.uuid().into_bytes();
+                            uuid.reverse();
+                            response.extend(uuid);
+                        }
+                        response
+                    }
+                    8 => vec![1, 8, 19, 0, 10],
+                    4 => {
+                        let start = u16::from_le_bytes([request[1], request[2]]);
+                        assert!([8, 20].contains(&start));
+                        vec![5, 1, start as u8, 0, 2, 0x29]
+                    }
+                    _ => panic!("unexpected discovery request {request:02x?}"),
+                };
+                peer.send(&response).await.unwrap();
+            }
+            let n = peer.recv(&mut p).await.unwrap();
+            assert_eq!(&p[..n], &[0x12, 8, 0, 1, 0]);
+            peer.send(&[0x13]).await.unwrap();
+            peer.send(&[0x1b, 7, 0, 0xaa, 0xbb]).await.unwrap();
+            let n = peer.recv(&mut p).await.unwrap();
+            assert_eq!(&p[..n], &[0x52, 11, 0, 9, 8]);
+            peer.shutdown();
+        };
+        let client = async {
+            let link = AttLink::open(socket).await.unwrap();
+            let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
+            let copy = seen.clone();
+            link.subscribe(
+                Characteristic::Input,
+                Box::new(move |p| copy.lock().unwrap().extend(p)),
+            )
+            .await
+            .unwrap();
+            for _ in 0..100 {
+                if !seen.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(*seen.lock().unwrap(), [0xaa, 0xbb]);
+            link.write(Characteristic::Vibration, &[9, 8])
+                .await
+                .unwrap();
+            // Keep the link alive until the peer has consumed the queued write.
+            link.closed().cancelled().await;
+            link.close().await;
+        };
+        tokio::join!(server, client);
     }
 }

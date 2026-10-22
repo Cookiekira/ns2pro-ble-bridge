@@ -51,6 +51,7 @@ impl Management {
                     && let Some(c) =
                         mgmt::completion(f).map_err(|e| BleError::Platform(e.to_string()))?
                     && c.command == opcode
+                    && (f.opcode == 1 || c.status != 0)
                 {
                     return Ok((c.status, c.data.to_vec()));
                 }
@@ -100,8 +101,18 @@ impl Management {
         target: Option<Address>,
         cancel: CancellationToken,
         duration: Duration,
+        observe_only: bool,
     ) -> Result<Option<Discovered>, BleError> {
-        let mut m = Self::open()?;
+        Self::scan_with(Self::open()?, index, target, cancel, duration, observe_only).await
+    }
+    async fn scan_with(
+        mut m: Self,
+        index: u16,
+        target: Option<Address>,
+        cancel: CancellationToken,
+        duration: Duration,
+        observe_only: bool,
+    ) -> Result<Option<Discovered>, BleError> {
         // Complete START even after caller cancellation so an owned discovery can be stopped.
         let (status, _) = m
             .command(mgmt::START_DISCOVERY, index, &[mgmt::LE_DISCOVERY])
@@ -123,7 +134,7 @@ impl Management {
                 let found=mgmt::found(f.payload).map_err(|e|BleError::Platform(e.to_string()))?;
                 // BR/EDR and scan responses without matching manufacturer identity cannot qualify.
                 if ![1,2].contains(&found.device.address_type)||target.is_some_and(|a|a!=found.device.address){continue}
-                if mgmt::controller_advertisement(found.eir).map_err(|e|BleError::Platform(e.to_string()))?.is_some(){return Ok(Some(Discovered{address:found.device.address,address_type:found.device.address_type}))}
+                if !observe_only && mgmt::controller_advertisement(found.eir).map_err(|e|BleError::Platform(e.to_string()))?.is_some(){return Ok(Some(Discovered{address:found.device.address,address_type:found.device.address_type}))}
             }
         })=>result.unwrap_or(Ok(None))};
         if owned
@@ -158,5 +169,118 @@ impl Management {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn manager(socket: Socket) -> Management {
+        Management {
+            socket,
+            events: VecDeque::new(),
+        }
+    }
+    async fn request(peer: &Socket, opcode: u16) -> Vec<u8> {
+        let mut p = [0; 512];
+        let n = peer.recv(&mut p).await.unwrap();
+        let frame = Frame::decode(&p[..n]).unwrap();
+        assert_eq!(frame.opcode, opcode);
+        assert_eq!(frame.index, 0);
+        frame.payload.to_vec()
+    }
+    async fn complete(peer: &Socket, opcode: u16, status: u8) {
+        let [a, b] = opcode.to_le_bytes();
+        peer.send(&mgmt::command(1, 0, &[a, b, status]).unwrap())
+            .await
+            .unwrap();
+    }
+    async fn advertisement(peer: &Socket, address: Address, address_type: u8) {
+        let mut p = mgmt::Device {
+            address,
+            address_type,
+        }
+        .encode()
+        .to_vec();
+        p.push(200);
+        p.extend([0; 4]);
+        let ad = [13, 0xff, 0x53, 5, 0, 0, 0, 0x7e, 5, 0x69, 0x20, 0, 0, 0x81];
+        p.extend((ad.len() as u16).to_le_bytes());
+        p.extend(ad);
+        peer.send(&mgmt::command(mgmt::DEVICE_FOUND, 0, &p).unwrap())
+            .await
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn busy_scan_uses_fresh_target_type_and_never_stops_other_owner() {
+        let (a, b) = super::super::socket::pair();
+        let target = Address::new(3).unwrap();
+        let scan = Management::scan_with(
+            manager(a),
+            0,
+            Some(target),
+            CancellationToken::new(),
+            Duration::from_secs(30),
+            false,
+        );
+        let peer = async {
+            assert_eq!(request(&b, mgmt::START_DISCOVERY).await, [6]);
+            complete(&b, mgmt::START_DISCOVERY, mgmt::BUSY).await;
+            advertisement(&b, Address::new(2).unwrap(), 1).await;
+            advertisement(&b, target, 2).await;
+            let mut p = [0; 32];
+            assert_eq!(
+                b.recv(&mut p).await.unwrap(),
+                0,
+                "STOP must not be sent for another discovery owner"
+            );
+        };
+        let (result, ()) = tokio::join!(scan, peer);
+        assert_eq!(
+            result.unwrap(),
+            Some(Discovered {
+                address: target,
+                address_type: 2
+            })
+        );
+    }
+    #[tokio::test]
+    async fn cancellation_during_start_still_stops_owned_discovery() {
+        let (a, b) = super::super::socket::pair();
+        let cancel = CancellationToken::new();
+        let scan = Management::scan_with(
+            manager(a),
+            0,
+            None,
+            cancel.clone(),
+            Duration::from_secs(30),
+            false,
+        );
+        let peer = async {
+            request(&b, mgmt::START_DISCOVERY).await;
+            cancel.cancel();
+            complete(&b, mgmt::START_DISCOVERY, 0).await;
+            assert_eq!(request(&b, mgmt::STOP_DISCOVERY).await, [6]);
+            complete(&b, mgmt::STOP_DISCOVERY, 0).await;
+        };
+        let (result, ()) = tokio::join!(scan, peer);
+        assert!(matches!(result, Err(BleError::Cancelled)));
+    }
+    #[tokio::test]
+    async fn successful_status_is_not_command_complete() {
+        let (a, b) = super::super::socket::pair();
+        let mut m = manager(a);
+        let command = m.command(mgmt::READ_INFO, 0, &[]);
+        let peer = async {
+            request(&b, mgmt::READ_INFO).await;
+            b.send(&mgmt::command(2, 0, &[4, 0, 0]).unwrap())
+                .await
+                .unwrap();
+            b.send(&mgmt::command(1, 0, &[4, 0, 0, 42]).unwrap())
+                .await
+                .unwrap();
+        };
+        let (result, ()) = tokio::join!(command, peer);
+        assert_eq!(result.unwrap(), (0, vec![42]));
     }
 }
