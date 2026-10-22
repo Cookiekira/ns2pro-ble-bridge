@@ -102,7 +102,10 @@ pub struct Stick {
 }
 
 impl Stick {
-    pub const CENTER: Self = Self { x: STICK_CENTER, y: STICK_CENTER };
+    pub const CENTER: Self = Self {
+        x: STICK_CENTER,
+        y: STICK_CENTER,
+    };
 }
 
 /// Unpacks two 12-bit values from three bytes.
@@ -116,7 +119,11 @@ pub fn unpack_stick12(raw: [u8; 3]) -> (u16, u16) {
 pub fn pack_stick12(x: u16, y: u16) -> [u8; 3] {
     let x = x.min(STICK_MAX);
     let y = y.min(STICK_MAX);
-    [x as u8, ((x >> 8) & 0x0F) as u8 | ((y & 0x0F) << 4) as u8, (y >> 4) as u8]
+    [
+        x as u8,
+        ((x >> 8) & 0x0F) as u8 | ((y & 0x0F) << 4) as u8,
+        (y >> 4) as u8,
+    ]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,7 +162,10 @@ impl Default for InputState {
 pub struct ShortReport(pub usize);
 
 /// Decodes a BLE common input report (notified on [`crate::gatt::Characteristic::Input`]).
-pub fn parse_common_report(data: &[u8], calibration: &Calibration) -> Result<InputState, ShortReport> {
+pub fn parse_common_report(
+    data: &[u8],
+    calibration: &Calibration,
+) -> Result<InputState, ShortReport> {
     if data.len() < 0x10 {
         return Err(ShortReport(data.len()));
     }
@@ -175,7 +185,8 @@ pub fn parse_common_report(data: &[u8], calibration: &Calibration) -> Result<Inp
     if data.len() >= 0x21 {
         let millivolts = i32::from(u16::from_le_bytes([data[0x1F], data[0x20]]));
         if millivolts > 0 {
-            state.battery_level = ((millivolts - 3200) * 9 / 800).clamp(0, i32::from(BATTERY_MAX)) as u8;
+            state.battery_level =
+                ((millivolts - 3200) * 9 / 800).clamp(0, i32::from(BATTERY_MAX)) as u8;
             state.external_power = true;
         }
     }
@@ -195,13 +206,20 @@ fn normalize_stick(x: u16, y: u16, calibration: Option<&StickCalibration>) -> St
             x: normalize_axis(i32::from(x), c.center_x, c.max_x, c.min_x),
             y: normalize_axis(i32::from(y), c.center_y, c.max_y, c.min_y),
         },
-        None => Stick { x: x.min(STICK_MAX), y: y.min(STICK_MAX) },
+        None => Stick {
+            x: x.min(STICK_MAX),
+            y: y.min(STICK_MAX),
+        },
     }
 }
 
 /// Maps a raw axis onto `0..=0x0FFF` around `0x0800` using per-direction spans.
 fn normalize_axis(value: i32, center: i32, positive_span: i32, negative_span: i32) -> u16 {
-    let (min, mid, max) = (i32::from(STICK_MIN), i32::from(STICK_CENTER), i32::from(STICK_MAX));
+    let (min, mid, max) = (
+        i32::from(STICK_MIN),
+        i32::from(STICK_CENTER),
+        i32::from(STICK_MAX),
+    );
     let out = if value >= center {
         if positive_span <= 0 {
             mid
@@ -233,7 +251,10 @@ mod tests {
         for (x, y) in [(0, 0), (0x123, 0xABC), (0xFFF, 0x001), (0x800, 0x800)] {
             assert_eq!(unpack_stick12(pack_stick12(x, y)), (x, y));
         }
-        assert_eq!(unpack_stick12(pack_stick12(0xFFFF, 0x1000)), (0x0FFF, 0x0FFF));
+        assert_eq!(
+            unpack_stick12(pack_stick12(0xFFFF, 0x1000)),
+            (0x0FFF, 0x0FFF)
+        );
     }
 
     #[test]
@@ -261,22 +282,43 @@ mod tests {
 
     #[test]
     fn rejects_short_reports() {
-        assert_eq!(parse_common_report(&[0; 15], &Calibration::default()), Err(ShortReport(15)));
+        assert_eq!(
+            parse_common_report(&[0; 15], &Calibration::default()),
+            Err(ShortReport(15))
+        );
     }
 
     #[test]
     fn calibration_scales_full_deflection() {
-        let cal = StickCalibration { center_x: 2000, center_y: 2000, max_x: 1500, max_y: 1500, min_x: 1500, min_y: 1500 };
-        let calibration = Calibration { primary: Some(cal), secondary: None };
+        let cal = StickCalibration {
+            center_x: 2000,
+            center_y: 2000,
+            max_x: 1500,
+            max_y: 1500,
+            min_x: 1500,
+            min_y: 1500,
+        };
+        let calibration = Calibration {
+            primary: Some(cal),
+            secondary: None,
+        };
         let mut r = report();
         r[0x0A..0x0D].copy_from_slice(&pack_stick12(3500, 500));
         let state = parse_common_report(&r, &calibration).unwrap();
-        assert_eq!(state.left_stick, Stick { x: STICK_MAX, y: STICK_MIN });
+        assert_eq!(
+            state.left_stick,
+            Stick {
+                x: STICK_MAX,
+                y: STICK_MIN
+            }
+        );
     }
 
     #[test]
     fn button_layout_round_trips() {
-        let all = COMMON_BUTTON_LAYOUT.iter().fold(Buttons::NONE, |acc, (b, _, _)| acc | *b);
+        let all = COMMON_BUTTON_LAYOUT
+            .iter()
+            .fold(Buttons::NONE, |acc, (b, _, _)| acc | *b);
         let mut raw = [0u8; 4];
         encode_buttons(all, &COMMON_BUTTON_LAYOUT, &mut raw);
         assert_eq!(decode_buttons(&raw, &COMMON_BUTTON_LAYOUT), all);

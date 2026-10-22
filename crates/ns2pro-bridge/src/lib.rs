@@ -1,2 +1,8 @@
 pub mod ble;
+pub mod cache;
+pub mod channels;
+pub mod cli;
+pub mod controller;
+pub mod session;
+pub mod stats;
 pub mod usb;

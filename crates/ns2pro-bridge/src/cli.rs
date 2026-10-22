@@ -1,0 +1,58 @@
+use clap::Parser;
+use ns2pro_proto::Address;
+use std::path::PathBuf;
+#[derive(Clone, Debug, Parser)]
+#[command(version, about = "Native Switch 2 Pro BLE to USB bridge")]
+pub struct Options {
+    #[arg(long, default_value = "localhost:3241")]
+    pub usb_addr: String,
+    #[arg(long)]
+    pub device_address: Option<Address>,
+    #[arg(long)]
+    pub pair_host: bool,
+    #[arg(long)]
+    pub host_address: Option<Address>,
+    #[arg(long)]
+    pub forget_device: bool,
+    #[arg(long,default_value_os_t=default_cache())]
+    pub cache_file: PathBuf,
+    #[arg(long)]
+    pub no_auto_attach: bool,
+    #[arg(long,default_value="0x07",value_parser=parse_flags)]
+    pub feature_flags: u8,
+    #[arg(long, default_value = "info")]
+    pub log_level: String,
+    #[arg(long, hide = true)]
+    pub bt_smoke_test: bool,
+}
+fn default_cache() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Ns2Pro.BleBridge/controller-cache.json")
+}
+fn parse_flags(s: &str) -> Result<u8, String> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u8::from_str_radix(hex, 16)
+    } else {
+        s.parse()
+    }
+    .map_err(|e| e.to_string())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn defaults_and_flags() {
+        let o = Options::try_parse_from(["bridge"]).unwrap();
+        assert_eq!(o.usb_addr, "localhost:3241");
+        assert_eq!(o.feature_flags, 7);
+        assert_eq!(o.log_level, "info");
+        assert_eq!(
+            Options::try_parse_from(["bridge", "--feature-flags", "255"])
+                .unwrap()
+                .feature_flags,
+            255
+        );
+        assert!(Options::try_parse_from(["bridge", "--verify-native-library"]).is_err());
+    }
+}

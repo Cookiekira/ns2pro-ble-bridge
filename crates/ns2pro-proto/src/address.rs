@@ -14,7 +14,11 @@ impl Address {
 
     /// Returns `None` when `value` does not fit in 48 bits.
     pub const fn new(value: u64) -> Option<Self> {
-        if value > Self::MAX { None } else { Some(Self(value)) }
+        if value > Self::MAX {
+            None
+        } else {
+            Some(Self(value))
+        }
     }
 
     pub const fn value(self) -> u64 {
@@ -51,7 +55,9 @@ impl FromStr for Address {
         if digits.len() != 12 {
             return Err(invalid());
         }
-        let value = digits.iter().fold(0u64, |acc, &d| (acc << 4) | u64::from(d));
+        let value = digits
+            .iter()
+            .fold(0u64, |acc, &d| (acc << 4) | u64::from(d));
         Self::new(value).ok_or_else(invalid)
     }
 }
