@@ -1,6 +1,6 @@
 //! Repeatable host-side latency/allocation experiment, never a wireless benchmark.
 #[allow(dead_code)]
-#[path = "support/linux_fake.rs"]
+#[path = "support/fake.rs"]
 mod fake;
 use fake::*;
 use ns2pro_bridge::{channels::Channels, session, usb::session::serve_urbs};
@@ -125,7 +125,10 @@ async fn notification_to_in_memory_response() {
     let cache = TestCache::new();
     let mut o = options(&cache);
     o.device_address = Some(address(1));
-    let radio = FakeBluetooth::default();
+    let radio = FakeController::new(FakeOptions {
+        short_spi: true,
+        ..Default::default()
+    });
     let channels = Channels::default();
     let cancel = CancellationToken::new();
     let usb_cancel = CancellationToken::new();
@@ -137,7 +140,7 @@ async fn notification_to_in_memory_response() {
         tokio::pin!(attempt);
         tokio::select! {
             result = &mut attempt => panic!("setup failed: {result:?}"),
-            _ = until(|| ready(&radio)) => {}
+            _ = until(|| radio.ready()) => {}
         }
         report(&mut peer, 0).await; // Consume initial dirty default state.
         let mut timings = Vec::with_capacity(SAMPLES);
@@ -150,14 +153,11 @@ async fn notification_to_in_memory_response() {
             tokio::task::yield_now().await;
             start_count();
             let start = Instant::now();
-            emit(
-                &radio,
-                if i % 2 == 0 {
-                    Buttons::A
-                } else {
-                    Buttons::default()
-                },
-            );
+            radio.emit(if i % 2 == 0 {
+                Buttons::A
+            } else {
+                Buttons::default()
+            });
             peer.read_exact(&mut reply).await.unwrap();
             let elapsed = start.elapsed().as_nanos() as u64;
             let (n, b) = stop_count();
