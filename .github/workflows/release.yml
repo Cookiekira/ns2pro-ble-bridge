@@ -9,9 +9,22 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and publish release
-    runs-on: windows-latest
+  build:
+    name: Publish ${{ matrix.rid }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+            publish_file: Ns2Pro.BleBridge.exe
+          - rid: linux-x64
+            os: ubuntu-latest
+            publish_file: Ns2Pro.BleBridge
+          - rid: linux-arm64
+            os: ubuntu-24.04-arm
+            publish_file: Ns2Pro.BleBridge
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout bridge
@@ -34,43 +47,53 @@ jobs:
         shell: pwsh
         run: |
           $publishDir = Join-Path $env:GITHUB_WORKSPACE "publish-output"
-          New-Item -ItemType Directory -Force $publishDir | Out-Null
-          dotnet publish src\Ns2Pro.BleBridge.csproj -c Release -r win-x64 -p:ContinuousIntegrationBuild=true "-p:PublishDir=$publishDir\"
+          dotnet publish (Join-Path $env:GITHUB_WORKSPACE "src/Ns2Pro.BleBridge.csproj") `
+            -c Release -r "${{ matrix.rid }}" -p:ContinuousIntegrationBuild=true `
+            "-p:PublishDir=$publishDir/"
 
-      - name: Prepare artifact
-        shell: pwsh
-        run: |
-          $publishExe = "publish-output\Ns2Pro.BleBridge.exe"
-          $artifactExe = "artifacts\Ns2Pro.BleBridge-${{ github.ref_name }}-win-x64.exe"
-
-          if (-not (Test-Path $publishExe)) {
-            throw "Published executable was not found: $publishExe"
+          $published = Join-Path $publishDir "${{ matrix.publish_file }}"
+          if (-not (Test-Path $published)) {
+            throw "Published executable was not found: $published"
           }
 
-          New-Item -ItemType Directory -Force artifacts | Out-Null
-          Copy-Item $publishExe $artifactExe
+          & $published --verify-native-library
+          if ($LASTEXITCODE -ne 0) {
+            throw "Embedded VIIPER verification failed for ${{ matrix.rid }}"
+          }
+
+          $artifactDir = Join-Path $env:GITHUB_WORKSPACE "artifacts"
+          New-Item -ItemType Directory -Force $artifactDir | Out-Null
+          $asset = Join-Path $artifactDir "Ns2Pro.BleBridge-${{ github.ref_name }}-${{ matrix.rid }}${{ matrix.rid == 'win-x64' && '.exe' || '' }}"
+          Copy-Item $published $asset
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: Ns2Pro.BleBridge-${{ github.ref_name }}-win-x64
-          path: artifacts/Ns2Pro.BleBridge-${{ github.ref_name }}-win-x64.exe
+          name: Ns2Pro.BleBridge-${{ github.ref_name }}-${{ matrix.rid }}
+          path: artifacts/Ns2Pro.BleBridge-${{ github.ref_name }}-${{ matrix.rid }}*
           if-no-files-found: error
           archive: false
 
-      - name: Publish GitHub Release
-        shell: pwsh
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish release assets
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
-          ASSET_PATH: artifacts\Ns2Pro.BleBridge-${{ github.ref_name }}-win-x64.exe
         run: |
-          gh release view $env:TAG_NAME --repo $env:GITHUB_REPOSITORY *> $null
-          $releaseExists = $LASTEXITCODE -eq 0
-
-          if ($releaseExists) {
-            gh release upload $env:TAG_NAME $env:ASSET_PATH --repo $env:GITHUB_REPOSITORY --clobber
-          }
-          else {
-            gh release create $env:TAG_NAME $env:ASSET_PATH --repo $env:GITHUB_REPOSITORY --generate-notes
-          }
+          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" --generate-notes
+          fi

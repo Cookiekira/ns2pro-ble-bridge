@@ -1,3 +1,4 @@
+#if WINDOWS
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
 using Windows.Foundation;
@@ -5,7 +6,7 @@ using Windows.Storage.Streams;
 
 namespace Ns2Pro.BleBridge;
 
-internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) : IAsyncDisposable
+internal sealed class WindowsGattTransport(BluetoothLEDevice device, Logger logger) : IBleTransport
 {
     private static readonly Guid s_initUuid = Guid.Parse("00c5af5d-1964-4e30-8f51-1956f96bd282");
     private static readonly Guid s_inputUuid = Guid.Parse("ab7de9be-89fe-49ad-828f-118f09df7fd2");
@@ -16,11 +17,17 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) 
     private readonly Dictionary<Guid, GattCharacteristic> _characteristics = [];
     private readonly SemaphoreSlim _commandSemaphore = new(1, 1);
     private readonly List<(Guid Uuid, TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs> Handler)> _handlers = [];
+    private readonly TaskCompletionSource _disconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private BluetoothLEPreferredConnectionParametersRequest? _connectionRequest;
+    private TypedEventHandler<BluetoothLEDevice, object>? _connectionHandler;
     private TaskCompletionSource<byte[]> _nextCommandResponse = NewResponseSource();
+
+    public Task Disconnected => _disconnected.Task;
 
     public async Task InitializeAsync(CancellationToken ct)
     {
+        _connectionHandler = OnConnectionStatusChanged;
+        device.ConnectionStatusChanged += _connectionHandler;
         RequestThroughputOptimized();
         await DiscoverAsync(ct).ConfigureAwait(false);
         await WriteAsync(s_initUuid, [0x01, 0x00], ct).ConfigureAwait(false);
@@ -65,6 +72,13 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) 
         _handlers.Clear();
         _connectionRequest?.Dispose();
         _connectionRequest = null;
+        if (_connectionHandler is not null)
+        {
+            device.ConnectionStatusChanged -= _connectionHandler;
+            _connectionHandler = null;
+        }
+        _disconnected.TrySetResult();
+        device.Dispose();
         _commandSemaphore.Dispose();
         return ValueTask.CompletedTask;
     }
@@ -151,6 +165,15 @@ internal sealed class BleGattTransport(BluetoothLEDevice device, Logger logger) 
         _nextCommandResponse.TrySetResult(data);
     }
 
+    private void OnConnectionStatusChanged(BluetoothLEDevice sender, object args)
+    {
+        if (sender.ConnectionStatus == BluetoothConnectionStatus.Disconnected && _disconnected.TrySetResult())
+        {
+            logger.Warn("BLE device connection status changed to disconnected.");
+        }
+    }
+
     private static TaskCompletionSource<byte[]> NewResponseSource() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
+#endif

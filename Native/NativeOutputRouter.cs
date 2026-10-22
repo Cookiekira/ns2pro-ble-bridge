@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 
 namespace Ns2Pro.BleBridge;
 
-internal static unsafe class NativeOutputRouter
+internal static class NativeOutputRouter
 {
     private static readonly ConcurrentDictionary<nuint, IControllerOutputTarget> s_outputTargets = [];
 
@@ -25,7 +25,7 @@ internal static unsafe class NativeOutputRouter
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    public static void OnNativeOutput(nuint handle, byte* leftRumble, byte* rightRumble, byte flags, byte playerLedMask)
+    public static unsafe void OnNativeOutput(nuint handle, byte* leftRumble, byte* rightRumble, byte flags, byte playerLedMask)
     {
         if (!s_outputTargets.TryGetValue(handle, out var target))
         {
