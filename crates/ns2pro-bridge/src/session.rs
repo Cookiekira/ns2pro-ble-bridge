@@ -71,6 +71,7 @@ pub async fn attempt<B: Bluetooth>(
                 paired = true;
             }
             cache.save(target.address)?;
+            channels.stats.lock().unwrap().connection = link.connection_report();
             established = true;
             tracing::info!(address=%target.address, "controller initialized; receiving input");
             controller.run(channels, cancel).await?;
@@ -80,6 +81,7 @@ pub async fn attempt<B: Bluetooth>(
             _ = cancel.cancelled() => Err(SessionError::Cancelled),
             result = setup => result,
         };
+        channels.stats.lock().unwrap().connection = Default::default();
         link.closed().cancel();
         channels.neutral();
         link.close().await;

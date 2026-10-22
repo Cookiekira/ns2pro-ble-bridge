@@ -76,6 +76,7 @@ impl Shared {
 }
 /// Raw LE ATT link. Notification callbacks run directly on its reusable receive buffer.
 pub struct AttLink {
+    report: crate::ble::ConnectionReport,
     shared: Arc<Shared>,
     handles: Vec<Handles>,
     mtu: u16,
@@ -90,7 +91,10 @@ impl std::fmt::Debug for AttLink {
     }
 }
 impl AttLink {
-    pub(super) async fn open(socket: Socket) -> Result<Self, LinkError> {
+    pub(super) async fn open(
+        socket: Socket,
+        report: crate::ble::ConnectionReport,
+    ) -> Result<Self, LinkError> {
         let shared = Arc::new(Shared::new(socket));
         let task_shared = shared.clone();
         let reader = tokio::spawn(async move {
@@ -98,6 +102,7 @@ impl AttLink {
             task_shared.close();
         });
         let mut link = Self {
+            report,
             shared,
             handles: vec![],
             mtu: att::DEFAULT_MTU,
@@ -134,6 +139,9 @@ impl Drop for AttLink {
     }
 }
 impl GattLink for AttLink {
+    fn connection_report(&self) -> crate::ble::ConnectionReport {
+        self.report
+    }
     async fn write(&self, c: Characteristic, value: &[u8]) -> Result<(), LinkError> {
         if value.len() + 3 > usize::from(self.mtu.min(self.shared.peer_mtu.load(Ordering::Relaxed)))
         {
@@ -422,6 +430,7 @@ mod tests {
         let reader_shared = shared.clone();
         let reader = tokio::spawn(async move { read_loop(&reader_shared).await });
         let link = AttLink {
+            report: Default::default(),
             shared,
             handles: vec![Handles {
                 characteristic: Characteristic::Input,
@@ -496,7 +505,7 @@ mod tests {
             peer.shutdown();
         };
         let client = async {
-            let link = AttLink::open(socket).await.unwrap();
+            let link = AttLink::open(socket, Default::default()).await.unwrap();
             let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
             let copy = seen.clone();
             link.subscribe(

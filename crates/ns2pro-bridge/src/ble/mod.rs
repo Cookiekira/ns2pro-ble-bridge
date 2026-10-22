@@ -2,6 +2,31 @@
 use ns2pro_proto::{Address, gatt::Characteristic};
 use tokio_util::sync::CancellationToken;
 
+/// Connection-time evidence, independent of notification receipt timing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConnectionReport {
+    pub target: ConnectionTarget,
+    pub preference: PreferenceOutcome,
+    /// Negotiated interval in Bluetooth units of 1.25 ms.
+    pub observed_interval: Option<u16>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConnectionTarget {
+    #[default]
+    Unspecified,
+    Interval(u16),
+    ThroughputOptimized,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PreferenceOutcome {
+    #[default]
+    NotRequested,
+    Unavailable,
+    Refused,
+    Unconfirmed,
+    Confirmed,
+}
+
 pub type NotificationSink = Box<dyn FnMut(&[u8]) + Send + 'static>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Discovered {
@@ -44,6 +69,7 @@ pub trait Bluetooth {
     fn adapter_address(&self) -> impl Future<Output = Result<Address, BleError>>;
 }
 pub trait GattLink: 'static {
+    fn connection_report(&self) -> ConnectionReport;
     fn write(
         &self,
         characteristic: Characteristic,

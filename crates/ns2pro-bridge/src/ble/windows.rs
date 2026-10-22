@@ -1,5 +1,8 @@
 //! Native WinRT transport. Controller/session protocol lives in shared services.
-use super::{BleError, Bluetooth, Discovered, GattLink, LinkError, NotificationSink};
+use super::{
+    BleError, Bluetooth, ConnectionReport, ConnectionTarget, Discovered, GattLink, LinkError,
+    NotificationSink, PreferenceOutcome,
+};
 use ns2pro_proto::{Address, advertisement, gatt::Characteristic};
 use std::{
     cell::RefCell,
@@ -18,6 +21,7 @@ use windows::{
         BluetoothAdapter, BluetoothAddressType, BluetoothCacheMode, BluetoothConnectionStatus,
         BluetoothLEDevice, BluetoothLEPreferredConnectionParameters,
         BluetoothLEPreferredConnectionParametersRequest,
+        BluetoothLEPreferredConnectionParametersRequestStatus as PreferenceStatus,
         GenericAttributeProfile::{
             GattCharacteristic, GattClientCharacteristicConfigurationDescriptorValue,
             GattCommunicationStatus, GattDeviceService, GattValueChangedEventArgs, GattWriteOption,
@@ -351,6 +355,11 @@ impl Bluetooth for WindowsBluetooth {
                 "BLE disconnected during discovery".into(),
             ));
         }
+        let mut report = ConnectionReport {
+            target: ConnectionTarget::ThroughputOptimized,
+            preference: PreferenceOutcome::Unavailable,
+            observed_interval: None,
+        };
         match BluetoothLEPreferredConnectionParameters::ThroughputOptimized().and_then(
             |parameters| {
                 resources
@@ -360,6 +369,12 @@ impl Bluetooth for WindowsBluetooth {
         ) {
             Ok(request) => {
                 tracing::info!(status = ?request.Status(), "Requested ThroughputOptimized BLE preference; no fixed interval guarantee");
+                report.preference = match request.Status() {
+                    Ok(PreferenceStatus::Success) => PreferenceOutcome::Confirmed,
+                    Ok(PreferenceStatus::DeviceNotAvailable) => PreferenceOutcome::Unavailable,
+                    Ok(PreferenceStatus::AccessDenied) => PreferenceOutcome::Refused,
+                    _ => PreferenceOutcome::Unconfirmed,
+                };
                 resources.preference = Some(request);
             }
             Err(error) => {
@@ -371,14 +386,18 @@ impl Bluetooth for WindowsBluetooth {
             .GetConnectionParameters()
             .and_then(|p| p.ConnectionInterval())
         {
-            Ok(interval) => tracing::info!(
-                interval_units_1_25_ms = interval,
-                "Observed BLE connection interval"
-            ),
+            Ok(interval) => {
+                report.observed_interval = Some(interval);
+                tracing::info!(
+                    interval_units_1_25_ms = interval,
+                    "Observed BLE connection interval"
+                );
+            }
             Err(error) => tracing::info!(%error, "Observed BLE connection interval: unknown"),
         }
         resources.characteristics = discovered;
         Ok(WindowsGattLink {
+            report,
             resources: RefCell::new(Some(resources)),
             closed,
         })
@@ -429,6 +448,7 @@ impl Drop for Resources {
     }
 }
 pub struct WindowsGattLink {
+    report: ConnectionReport,
     resources: RefCell<Option<Resources>>,
     closed: CancellationToken,
 }
@@ -457,6 +477,9 @@ impl WindowsGattLink {
     }
 }
 impl GattLink for WindowsGattLink {
+    fn connection_report(&self) -> ConnectionReport {
+        self.report
+    }
     async fn write(&self, kind: Characteristic, bytes: &[u8]) -> Result<(), LinkError> {
         let characteristic = self.characteristic(kind)?;
         let writer = DataWriter::new().map_err(link)?;

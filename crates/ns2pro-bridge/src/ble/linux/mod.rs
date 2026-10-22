@@ -77,11 +77,12 @@ impl Bluetooth for LinuxBluetooth {
         )
         .await
         .map_err(|_| BleError::Timeout)??;
-        if let Some(observer) = observer {
-            observer.request(&socket, self.address, target).await;
-        }
+        let report = match observer {
+            Some(observer) => observer.request(&socket, self.address, target).await,
+            None => interval::unavailable(),
+        };
         tracing::debug!(address=%target.address, "raw ATT connected; discovering GATT");
-        let link = AttLink::open(socket)
+        let link = AttLink::open(socket, report)
             .await
             .map_err(|e| BleError::Platform(e.to_string()))?;
         tracing::debug!(address=%target.address, "GATT discovery complete");
