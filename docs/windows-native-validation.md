@@ -45,7 +45,7 @@ Release measurement conditions: Windows-target executable under Wine on this Lin
 
 Shared app review findings (pending-attach cancellation reporting setup failure; server-first exit dropping rather than draining attach) were fixed centrally in `7fad599` and included in the final build/tests. Native attach additionally checks pre-cancellation before argument encoding or SetupDi discovery, and preserves cancellation during failure cleanup.
 
-Native Windows CI must still build and execute the suite on Windows: Wine is additional evidence, not Windows OS acceptance. No physical Windows Bluetooth adapter, controller, usbip-win2 kernel driver, wireless interval/latency, or virtual-device enumeration acceptance was performed or claimed. Encoding and cleanup tests do not establish driver/hardware operation.
+Native Windows CI must still build and execute the suite on Windows: Wine is additional evidence, not Windows OS acceptance. *(Native CI superseded: see [Native Windows CI](#native-windows-ci).)* No physical Windows Bluetooth adapter, controller, usbip-win2 kernel driver, wireless interval/latency, or virtual-device enumeration acceptance was performed or claimed. Encoding and cleanup tests do not establish driver/hardware operation.
 
 ## Rust-only cutover revalidation
 
@@ -66,7 +66,7 @@ Updated release measurements (10,000 samples each, same warmup/single-thread/pau
 | Pure BLE decode to encoded USB/IP response | 100 ns | 100 ns | 1,700 ns | 0 / 0 |
 | Fake GATT notification to in-memory USB/IP peer | 4,700 ns | 6,000 ns | 23,600 ns | 0 / 0 |
 
-These remain cross-build and Wine execution results. Native Windows CI, Bluetooth/controller hardware, usbip-win2 kernel-driver attach, and native Windows latency were not executed or claimed.
+These remain cross-build and Wine execution results. Native Windows CI, Bluetooth/controller hardware, usbip-win2 kernel-driver attach, and native Windows latency were not executed or claimed. *(Native CI superseded: see [Native Windows CI](#native-windows-ci).)*
 
 ## Primary references
 
@@ -85,7 +85,7 @@ tests under Wine. All passed: **53 tests**, 0 failures, 2 opt-in measurements ig
 in the default invocation. Counts: 13 bridge/native/CLI, 3 lifecycle, 7 primary
 session, 27 protocol and 3 fixture tests. The late-notification-after-neutral
 regression passed. No code edits were needed. These remain cross-build/Wine
-results, with native Windows CI/hardware unverified.
+results, with native Windows CI/hardware unverified. *(Native CI superseded: see [Native Windows CI](#native-windows-ci).)*
 
 ## Post-hardware-fix integration revalidation (2026-10-22)
 
@@ -137,7 +137,7 @@ version startup log, then exited 1 with Bluetooth `E_NOTIMPL (0x80004001)` becau
 Wine does not implement the adapter API used here. A successful Bluetooth scan is
 not claimed, and the controller-connection milestone requires real Bluetooth.
 
-**Native Windows CI remains unverified until a remote Windows run.** No physical
+~~Native Windows CI remains unverified until a remote Windows run.~~ *(Native CI superseded: see [Native Windows CI](#native-windows-ci).)* No physical
 Windows Bluetooth/controller tests, usbip-win2 kernel-driver attach, or Windows
 hardware acceptance were performed. The Linux hardware fix is present in the
 revision but its Linux-specific readiness behavior is not exercised by these
@@ -172,4 +172,15 @@ this bulk-only fix, as requested; no updated latency claim is made.
 These are x86-64 MSVC cross-build and Wine-executed test results on Linux, not a
 native Windows CI or hardware run. Native Windows CI, actual usbip-win2 driver
 attach, and Bluetooth/controller hardware acceptance remain unverified. Only this
-platform evidence file is committed for the coordinator to cherry-pick.
+platform evidence file is committed for the coordinator to cherry-pick. *(Native CI superseded: see [Native Windows CI](#native-windows-ci).)*
+
+## Native Windows CI
+
+CI run 39772269154 at `d951bb1` passed the `windows` job on `windows-latest`:
+`cargo build`, strict `clippy -D warnings` and `cargo test --locked --workspace`
+with 56 tests passed. The same run passed the `linux` and `linux-arm64` jobs.
+Release dry run 39769150686 built the win-x64 artifact, and tag release run
+39772680571 published `v0.2.0` with `ns2pro-ble-bridge-v0.2.0-win-x64.exe`.
+This is native build/test evidence only: physical WinRT Bluetooth/controller,
+usbip-win2 kernel-driver attach and enumeration, and Windows interval/latency
+acceptance remain unverified.
