@@ -1,6 +1,6 @@
 //! Portable lifecycle regressions with external radio/cache and in-memory USB seams.
 #[allow(dead_code)]
-#[path = "support/linux_fake.rs"]
+#[path = "support/fake.rs"]
 mod fake;
 use fake::*;
 use ns2pro_bridge::{
@@ -15,8 +15,11 @@ use tokio_util::sync::CancellationToken;
 async fn failed_cached_acquisition_invalidates_but_explicit_address_wins() {
     let cache = TestCache::new();
     Cache(cache.path()).save(address(1)).unwrap();
-    let radio = FakeBluetooth::default();
-    radio.0.lock().unwrap().fail_connect = true;
+    let radio = FakeController::new(FakeOptions {
+        short_spi: true,
+        ..Default::default()
+    });
+    radio.configure(|o| o.fail_connect = true);
     let channels = Channels::default();
     let cancel = CancellationToken::new();
     let attempt_cache = Cache(cache.path());
@@ -28,7 +31,7 @@ async fn failed_cached_acquisition_invalidates_but_explicit_address_wins() {
             .result
             .is_err()
     );
-    assert_eq!(radio.0.lock().unwrap().scans, [Some(address(2))]);
+    assert_eq!(radio.observed().scans, [Some(address(2))]);
     assert_eq!(Cache(cache.path()).load().unwrap(), Some(address(1)));
     o.device_address = None;
     assert!(
@@ -43,8 +46,11 @@ async fn failed_cached_acquisition_invalidates_but_explicit_address_wins() {
 async fn cancellation_preserves_cache_and_partial_setup_releases_link() {
     let cache = TestCache::new();
     Cache(cache.path()).save(address(1)).unwrap();
-    let radio = FakeBluetooth::default();
-    radio.0.lock().unwrap().block_scan = true;
+    let radio = FakeController::new(FakeOptions {
+        short_spi: true,
+        ..Default::default()
+    });
+    radio.configure(|o| o.block_scan = true);
     let channels = Channels::default();
     let cancel = CancellationToken::new();
     let attempt_cache = Cache(cache.path());
@@ -53,13 +59,13 @@ async fn cancellation_preserves_cache_and_partial_setup_releases_link() {
     tokio::pin!(attempt);
     tokio::select! {
         result = &mut attempt => panic!("scan unexpectedly completed: {result:?}"),
-        _ = until(|| !radio.0.lock().unwrap().scans.is_empty()) => {}
+        _ = until(|| !radio.observed().scans.is_empty()) => {}
     }
     cancel.cancel();
     assert!(attempt.await.result.is_err());
     assert_eq!(Cache(cache.path()).load().unwrap(), Some(address(1)));
-    radio.0.lock().unwrap().block_scan = false;
-    radio.0.lock().unwrap().fail_init = true;
+    radio.configure(|o| o.block_scan = false);
+    radio.configure(|o| o.fail_init = true);
     assert!(
         session::attempt(
             &radio,
@@ -73,7 +79,7 @@ async fn cancellation_preserves_cache_and_partial_setup_releases_link() {
         .result
         .is_err()
     );
-    assert_eq!(radio.0.lock().unwrap().closed, 1);
+    assert_eq!(radio.observed().closes, 1);
     assert_eq!(Cache(cache.path()).load().unwrap(), None);
 }
 #[tokio::test(start_paused = true)]
@@ -81,7 +87,10 @@ async fn disconnect_neutral_reaches_usb_peer_and_reconnect_replays_led_without_o
     let cache = TestCache::new();
     let mut o = options(&cache);
     o.device_address = Some(address(1));
-    let radio = FakeBluetooth::default();
+    let radio = FakeController::new(FakeOptions {
+        short_spi: true,
+        ..Default::default()
+    });
     let channels = Channels::default();
     channels.leds.send_replace(9);
     let cancel = CancellationToken::new();
@@ -96,16 +105,16 @@ async fn disconnect_neutral_reaches_usb_peer_and_reconnect_replays_led_without_o
             tokio::pin!(attempt);
             tokio::select! {
                 result = &mut attempt => panic!("setup failed: {result:?}"),
-                _ = until(|| ready(&radio)) => {}
+                _ = until(|| radio.ready()) => {}
             }
             assert_eq!(Cache(cache.path()).load().unwrap(), Some(address(1)));
-            emit(&radio, Buttons::A);
+            radio.emit(Buttons::A);
             pressed = report(&mut peer, 1).await;
             channels.rumble.send_replace(Some(Rumble {
                 left: [3; 16],
                 right: [4; 16],
             }));
-            radio.0.lock().unwrap().connections[0].cancel();
+            radio.disconnect(0);
             assert!(attempt.await.result.is_err());
         }
         let neutral = report(&mut peer, 2).await;
@@ -114,7 +123,7 @@ async fn disconnect_neutral_reaches_usb_peer_and_reconnect_replays_led_without_o
         assert_eq!(&neutral[3..6], &[0, 0, 0]);
         assert_eq!(channels.input.borrow().state.buttons, Buttons::default());
         assert_eq!(*channels.rumble.borrow(), None);
-        let writes = radio.0.lock().unwrap().writes.len();
+        let writes = radio.observed().writes.len();
         channels.rumble.send_replace(Some(Rumble {
             left: [5; 16],
             right: [6; 16],
@@ -123,11 +132,11 @@ async fn disconnect_neutral_reaches_usb_peer_and_reconnect_replays_led_without_o
         tokio::pin!(reconnect);
         tokio::select! {
             result = &mut reconnect => panic!("reconnect failed: {result:?}"),
-            _ = until(|| ready(&radio)) => {}
+            _ = until(|| radio.ready()) => {}
         }
         tokio::task::yield_now().await;
         {
-            let s = radio.0.lock().unwrap();
+            let s = radio.observed();
             assert!(
                 s.writes[writes..].iter().any(
                     |(c, p)| *c == Characteristic::Command && *p == command::set_player_leds(9)
@@ -142,7 +151,7 @@ async fn disconnect_neutral_reaches_usb_peer_and_reconnect_replays_led_without_o
         }
         cancel.cancel();
         assert!(reconnect.await.result.is_err());
-        assert_eq!(radio.0.lock().unwrap().closed, 2);
+        assert_eq!(radio.observed().closes, 2);
         usb_cancel.cancel();
     };
     let (usb_result, ()) = tokio::join!(usb, scenario);

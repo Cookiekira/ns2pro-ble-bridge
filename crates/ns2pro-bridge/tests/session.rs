@@ -1,4 +1,8 @@
 //! Primary boundary: real controller/session/device over fake GATT and a byte peer.
+#[allow(dead_code)]
+#[path = "support/fake.rs"]
+mod fake;
+use fake::{FakeController, FakeOptions, TestCache};
 use ns2pro_bridge::{
     ble::*,
     channels::{Channels, Identity},
@@ -7,110 +11,13 @@ use ns2pro_bridge::{
 };
 use ns2pro_proto::{
     Address, calibration::Calibration, command, gatt::Characteristic, input::pack_stick12,
-    pairing::confirmation,
 };
 use ns2pro_usb::usbip::Urb;
-use std::sync::{Arc, Mutex};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, DuplexStream},
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
-#[derive(Default)]
-struct Data {
-    writes: Vec<(Characteristic, Vec<u8>)>,
-    input: Option<NotificationSink>,
-    response: Option<NotificationSink>,
-    key: [u8; 16],
-    reject: bool,
-    bad_calibration: bool,
-    identity: Option<[u8; 64]>,
-    bad_identity: bool,
-    closes: usize,
-}
-#[derive(Clone, Default)]
-struct Fake {
-    data: Arc<Mutex<Data>>,
-    closed: CancellationToken,
-    report: ConnectionReport,
-}
-impl Fake {
-    fn notify(&self, bytes: &[u8]) {
-        self.data.lock().unwrap().input.as_mut().unwrap()(bytes);
-    }
-    fn writes(&self) -> Vec<(Characteristic, Vec<u8>)> {
-        self.data.lock().unwrap().writes.clone()
-    }
-}
-impl GattLink for Fake {
-    fn connection_report(&self) -> ConnectionReport {
-        self.report
-    }
-    async fn write(&self, ch: Characteristic, bytes: &[u8]) -> Result<(), LinkError> {
-        let mut d = self.data.lock().unwrap();
-        d.writes.push((ch, bytes.to_vec()));
-        if ch == Characteristic::Command {
-            let mut reply = vec![bytes[0], 0, bytes[2], bytes[3], 0, 0, 0, 0];
-            match (bytes[0], bytes[3]) {
-                (2, 4) => {
-                    let address = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
-                    if (address == 0x13000 && d.bad_identity)
-                        || (address != 0x13000 && d.bad_calibration)
-                    {
-                        reply[0] = 0xff;
-                    } else {
-                        reply.extend([64, 0, 0, 0]);
-                        reply.extend(address.to_le_bytes());
-                        reply.extend(if address == 0x13000 {
-                            d.identity
-                                .unwrap_or_else(|| ns2pro_usb::device::flash_block(address))
-                        } else {
-                            ns2pro_usb::device::flash_block(address)
-                        });
-                    }
-                }
-                (0x15, sub) => {
-                    reply.push(u8::from(!d.reject));
-                    match sub {
-                        1 => reply.extend([0; 8]),
-                        4 => {
-                            d.key.copy_from_slice(&bytes[9..25]);
-                            reply.extend([0x33; 16]);
-                        }
-                        2 => {
-                            let ltk = d.key.map(|b| b ^ 0x33);
-                            let challenge = bytes[9..25].try_into().unwrap();
-                            reply.extend(confirmation(ltk, challenge));
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-            d.response.as_mut().unwrap()(&reply);
-        }
-        Ok(())
-    }
-    async fn subscribe(&self, ch: Characteristic, sink: NotificationSink) -> Result<(), LinkError> {
-        let mut d = self.data.lock().unwrap();
-        match ch {
-            Characteristic::Input => d.input = Some(sink),
-            Characteristic::CommandResponse => d.response = Some(sink),
-            _ => return Err(LinkError::Platform("not notifying".into())),
-        }
-        Ok(())
-    }
-    fn closed(&self) -> CancellationToken {
-        self.closed.clone()
-    }
-    async fn close(&self) {
-        let mut d = self.data.lock().unwrap();
-        d.closes += 1;
-        d.input = None;
-        d.response = None;
-        self.closed.cancel();
-    }
-}
 fn urb(seq: u32, dir: u32, ep: u32, len: usize) -> Urb {
     Urb {
         command: 1,
@@ -169,9 +76,9 @@ async fn read_usb_identity(peer: &mut DuplexStream) -> [u8; 64] {
 #[tokio::test(start_paused = true)]
 async fn controller_identity_reaches_usb_at_start_and_after_changes() {
     for initialize_first in [false, true] {
-        let link = Fake::default();
+        let link = FakeController::default();
         let distinctive = std::array::from_fn(|i| (i as u8).wrapping_mul(7));
-        link.data.lock().unwrap().identity = Some(distinctive);
+        link.configure(|o| o.identity = Some(distinctive));
         let channels = Channels::default();
         let mut controller = Controller::new(&link).await.unwrap();
         if initialize_first {
@@ -201,7 +108,7 @@ async fn controller_identity_reaches_usb_at_start_and_after_changes() {
             assert_eq!(read_usb_identity(&mut peer).await, distinctive);
             // A reconnect replaces identity without replacing the USB session.
             let replacement = [0x5a; 64];
-            link.data.lock().unwrap().identity = Some(replacement);
+            link.configure(|o| o.identity = Some(replacement));
             controller.initialize(&channels, 7).await.unwrap();
             assert_eq!(read_usb_identity(&mut peer).await, replacement);
             cancel.cancel();
@@ -213,8 +120,8 @@ async fn controller_identity_reaches_usb_at_start_and_after_changes() {
 
 #[tokio::test(start_paused = true)]
 async fn identity_read_failure_uses_fallback_and_keeps_input_running() {
-    let link = Fake::default();
-    link.data.lock().unwrap().bad_identity = true;
+    let link = FakeController::default();
+    link.configure(|o| o.bad_identity = true);
     let channels = Channels::default();
     let mut controller = Controller::new(&link).await.unwrap();
     controller.initialize(&channels, 7).await.unwrap();
@@ -244,7 +151,7 @@ async fn identity_read_failure_uses_fallback_and_keeps_input_running() {
 
 #[tokio::test(start_paused = true)]
 async fn complete_session_notification_to_usb_and_outputs() {
-    let link = Fake::default();
+    let link = FakeController::default();
     let channels = Channels::default();
     let mut controller = Controller::new(&link).await.unwrap();
     controller.initialize(&channels, 7).await.unwrap();
@@ -369,15 +276,15 @@ async fn pending_bulk_unlink_stall_and_partial_header_survive_input() {
 }
 #[tokio::test]
 async fn pairing_reject_and_calibration_fallback() {
-    let link = Fake::default();
-    link.data.lock().unwrap().bad_calibration = true;
+    let link = FakeController::default();
+    link.configure(|o| o.bad_calibration = true);
     let channels = Channels::default();
     let mut controller = Controller::new(&link).await.unwrap();
     controller.initialize(&channels, 7).await.unwrap();
     link.notify(&report());
     assert_eq!(channels.input.borrow().state.left_stick.x, 0x123);
     assert_eq!(Calibration::default().primary, None);
-    link.data.lock().unwrap().reject = true;
+    link.configure(|o| o.reject_pairing = true);
     assert!(
         controller
             .pair(Address::new(1).unwrap(), [0; 16], [0; 16])
@@ -445,7 +352,7 @@ async fn flash_reply_survives_split_bulk_reads_without_consuming_the_next_reply(
 #[tokio::test(start_paused = true)]
 async fn rumble_leading_edge_latest_value_twenty_ms_and_setup_output_replay() {
     use ns2pro_usb::Output;
-    let link = Fake::default();
+    let link = FakeController::default();
     let channels = Channels::default();
     let mut controller = Controller::new(&link).await.unwrap();
     controller.initialize(&channels, 7).await.unwrap();
@@ -502,60 +409,6 @@ async fn rumble_leading_edge_latest_value_twenty_ms_and_setup_output_replay() {
     assert!(result.is_err());
 }
 
-#[derive(Default)]
-struct FakeBluetooth {
-    link: Fake,
-    report: ConnectionReport,
-    queries: std::sync::atomic::AtomicUsize,
-    scans: Mutex<Vec<Option<Address>>>,
-    fail: std::sync::atomic::AtomicBool,
-}
-impl Bluetooth for FakeBluetooth {
-    type Link = Fake;
-    async fn scan(&self, target: Option<Address>) -> Result<Discovered, BleError> {
-        self.scans.lock().unwrap().push(target);
-        if self.fail.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(BleError::Platform("test discovery failure".into()));
-        }
-        Ok(Discovered {
-            address: target.unwrap_or(Address::new(0x123456789abc).unwrap()),
-            address_type: ns2pro_proto::LeAddressType::Random,
-        })
-    }
-    async fn connect(&self, _: &Discovered) -> Result<Fake, BleError> {
-        Ok(Fake {
-            data: self.link.data.clone(),
-            report: self.report,
-            closed: CancellationToken::new(),
-        })
-    }
-    async fn adapter_address(&self) -> Result<Address, BleError> {
-        self.queries
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(Address::new(0x112233445566).unwrap())
-    }
-}
-struct TestCache(std::path::PathBuf);
-impl TestCache {
-    fn new() -> Self {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let p = std::env::temp_dir().join(format!(
-            "ns2-core-session-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        Self(p)
-    }
-    fn path(&self) -> std::path::PathBuf {
-        self.0.join("cache.json")
-    }
-}
-impl Drop for TestCache {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 #[tokio::test(start_paused = true)]
 async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
     use clap::Parser;
@@ -568,14 +421,17 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
         "--pair-host",
     ]);
     options.cache_file = cache.path();
-    let bluetooth = FakeBluetooth {
-        report: ConnectionReport {
-            target: ConnectionTarget::Interval(6),
-            preference: PreferenceOutcome::Confirmed,
-            observed_interval: Some(6),
-        },
-        ..Default::default()
+    let report = ConnectionReport {
+        target: ConnectionTarget::Interval(6),
+        preference: PreferenceOutcome::Confirmed,
+        observed_interval: Some(6),
     };
+    let bluetooth = FakeController::new(FakeOptions {
+        report,
+        discovered_address: Some(Address::new(0x123456789abc).unwrap()),
+        adapter_address: Some(Address::new(0x112233445566).unwrap()),
+        ..Default::default()
+    });
     let channels = Channels::default();
     let attempt_cache = ns2pro_bridge::cache::Cache(cache.path());
     let mut paired = false;
@@ -583,13 +439,13 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
         let cancel = CancellationToken::new();
         let driver = async {
             for _ in 0..100 {
-                if cache.path().exists() && bluetooth.link.data.lock().unwrap().input.is_some() {
+                if cache.path().exists() && bluetooth.ready() {
                     break;
                 }
                 tokio::task::yield_now().await;
             }
             assert!(cache.path().exists());
-            assert_eq!(channels.stats.lock().unwrap().connection, bluetooth.report);
+            assert_eq!(channels.stats.lock().unwrap().connection, report);
             cancel.cancel();
         };
         let (result, ()) = tokio::join!(
@@ -612,16 +468,12 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
         );
         paired = result.paired;
     }
-    assert_eq!(
-        bluetooth.queries.load(std::sync::atomic::Ordering::Relaxed),
-        0
-    );
-    let scans = bluetooth.scans.lock().unwrap();
+    assert_eq!(bluetooth.observed().adapter_queries, 0);
+    let scans = bluetooth.observed().scans;
     assert_eq!(scans[0], None);
     assert_eq!(scans[1], Cache(cache.path()).load().unwrap());
     assert_eq!(
         bluetooth
-            .link
             .writes()
             .iter()
             .filter(|(c, p)| *c == Characteristic::Command && p[0] == 0x15)
@@ -629,7 +481,7 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
         4,
         "successful pair-host happens once across reconnects"
     );
-    assert_eq!(bluetooth.link.data.lock().unwrap().closes, 2);
+    assert_eq!(bluetooth.observed().closes, 2);
 }
 #[tokio::test(start_paused = true)]
 async fn forget_device_and_bounded_cancellable_backoff() {
@@ -639,21 +491,21 @@ async fn forget_device_and_bounded_cancellable_backoff() {
     Cache(cache.path()).save(Address::new(1).unwrap()).unwrap();
     let mut options = Options::parse_from(["bridge", "--forget-device"]);
     options.cache_file = cache.path();
-    let bluetooth = FakeBluetooth::default();
-    bluetooth
-        .fail
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let bluetooth = FakeController::new(FakeOptions {
+        fail_scan: true,
+        ..Default::default()
+    });
     let channels = Channels::default();
     let cancel = CancellationToken::new();
     let driver = async {
         tokio::task::yield_now().await;
         assert!(!cache.path().exists());
-        assert_eq!(*bluetooth.scans.lock().unwrap(), vec![None]);
+        assert_eq!(bluetooth.observed().scans, vec![None]);
         for (index, minimum) in [1000, 2000, 4000, 8000, 10000].into_iter().enumerate() {
             tokio::time::advance(Duration::from_millis(minimum - 1)).await;
             tokio::task::yield_now().await;
             assert_eq!(
-                bluetooth.scans.lock().unwrap().len(),
+                bluetooth.observed().scans.len(),
                 index + 1,
                 "no early retry"
             );
@@ -664,7 +516,7 @@ async fn forget_device_and_bounded_cancellable_backoff() {
             }))
             .await;
             tokio::task::yield_now().await;
-            assert_eq!(bluetooth.scans.lock().unwrap().len(), index + 2);
+            assert_eq!(bluetooth.observed().scans.len(), index + 2);
         }
         cancel.cancel();
     };
@@ -673,13 +525,13 @@ async fn forget_device_and_bounded_cancellable_backoff() {
 }
 #[tokio::test]
 async fn late_notification_cannot_overwrite_neutral_after_disconnect() {
-    let link = Fake::default();
+    let link = FakeController::default();
     let channels = Channels::default();
     let mut controller = Controller::new(&link).await.unwrap();
     controller.initialize(&channels, 7).await.unwrap();
     link.notify(&report());
     assert_ne!(channels.input.borrow().state.buttons, Default::default());
-    link.closed.cancel();
+    link.closed().cancel();
     channels.neutral();
     link.notify(&report());
     assert_eq!(channels.input.borrow().state, Default::default());
