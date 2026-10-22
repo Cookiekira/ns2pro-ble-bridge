@@ -28,6 +28,16 @@ impl Characteristic {
     /// Characteristics the bridge subscribes to.
     pub const NOTIFYING: [Self; 2] = [Self::Input, Self::CommandResponse];
 
+    /// Check required characteristics in protocol order; adapters supply availability.
+    pub fn check_required(mut available: impl FnMut(Self) -> bool) -> Result<(), Self> {
+        for kind in Self::ALL {
+            if !available(kind) {
+                return Err(kind);
+            }
+        }
+        Ok(())
+    }
+
     pub const fn uuid(self) -> Uuid {
         match self {
             Self::Init => Uuid::from_u128(0x00c5af5d_1964_4e30_8f51_1956f96bd282),
@@ -45,3 +55,23 @@ impl Characteristic {
 
 /// Payload written to [`Characteristic::Init`].
 pub const INIT_PAYLOAD: [u8; 2] = [0x01, 0x00];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requires_every_characteristic_in_protocol_order() {
+        assert_eq!(Characteristic::check_required(|_| true), Ok(()));
+        for missing in Characteristic::ALL {
+            assert_eq!(
+                Characteristic::check_required(|kind| kind != missing),
+                Err(missing)
+            );
+        }
+        assert_eq!(
+            Characteristic::check_required(|_| false),
+            Err(Characteristic::Init)
+        );
+    }
+}

@@ -1,5 +1,5 @@
 use super::socket::Socket;
-use crate::ble::{BleError, Discovered};
+use crate::ble::{BleError, Discovered, matches_target};
 use ns2pro_proto::{
     Address,
     mgmt::{self, Frame},
@@ -141,10 +141,9 @@ impl Management {
                     let mgmt::AddressType::Le(address_type) = found.device.address_type else {
                         continue;
                     };
-                    if target.is_some_and(|a| a != found.device.address) {
-                        continue;
-                    }
-                    if mgmt::controller_advertisement(found.eir)?.is_some() {
+                    if matches_target(target, found.device.address, || {
+                        mgmt::controller_advertisement(found.eir).map(|mode| mode.is_some())
+                    })? {
                         return Ok(Some(Discovered {
                             address: found.device.address,
                             address_type,

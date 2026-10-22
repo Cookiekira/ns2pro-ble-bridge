@@ -286,25 +286,28 @@ impl Discovery {
         if !matches!(self.stage, Stage::Done) {
             return Err(AttError::Malformed);
         }
-        Characteristic::ALL
-            .into_iter()
-            .map(|kind| {
-                let d = self
-                    .declarations
-                    .iter()
-                    .flatten()
-                    .find(|d| d.kind == Some(kind))
-                    .ok_or(AttError::Missing(kind))?;
-                if Characteristic::NOTIFYING.contains(&kind) && d.cccd.is_none() {
-                    return Err(AttError::Missing(kind));
-                }
-                Ok(Handles {
-                    characteristic: kind,
-                    value: d.value,
-                    cccd: d.cccd,
-                })
-            })
-            .collect()
+        let mut handles = Vec::new();
+        Characteristic::check_required(|kind| {
+            let Some(d) = self
+                .declarations
+                .iter()
+                .flatten()
+                .find(|d| d.kind == Some(kind))
+            else {
+                return false;
+            };
+            if Characteristic::NOTIFYING.contains(&kind) && d.cccd.is_none() {
+                return false;
+            }
+            handles.push(Handles {
+                characteristic: kind,
+                value: d.value,
+                cccd: d.cccd,
+            });
+            true
+        })
+        .map_err(AttError::Missing)?;
+        Ok(handles)
     }
 }
 /// Classify asynchronous peer traffic without copying notification payloads.
@@ -385,6 +388,37 @@ mod tests {
         assert_eq!(d.declarations[1][0].cccd, Some(14));
         assert_eq!(d.finish(), Err(AttError::Missing(Characteristic::Init)));
     }
+    #[test]
+    fn finish_requires_cccd_only_for_notifying_characteristics() {
+        let mut d = Discovery::new();
+        d.stage = Stage::Done;
+        d.declarations = vec![
+            Characteristic::ALL
+                .into_iter()
+                .map(|kind| Declaration {
+                    handle: 1,
+                    value: 2,
+                    kind: Some(kind),
+                    cccd: Characteristic::NOTIFYING.contains(&kind).then_some(3),
+                })
+                .collect(),
+        ];
+        assert_eq!(d.finish().unwrap().len(), Characteristic::ALL.len());
+        for kind in Characteristic::NOTIFYING {
+            let declaration = d.declarations[0]
+                .iter_mut()
+                .find(|entry| entry.kind == Some(kind))
+                .unwrap();
+            declaration.cccd = None;
+            assert_eq!(d.finish(), Err(AttError::Missing(kind)));
+            d.declarations[0]
+                .iter_mut()
+                .find(|entry| entry.kind == Some(kind))
+                .unwrap()
+                .cccd = Some(3);
+        }
+    }
+
     #[test]
     fn rejects_nonprogress_and_out_of_service() {
         let mut d = Discovery::new();

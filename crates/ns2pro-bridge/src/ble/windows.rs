@@ -1,7 +1,7 @@
 //! Native WinRT transport. Controller/session protocol lives in shared services.
 use super::{
-    BleError, Bluetooth, ConnectionReport, ConnectionTarget, Discovered, GattLink, LinkError,
-    NotificationSink, PreferenceOutcome,
+    BleError, Bluetooth, CONNECT_TIMEOUT, ConnectionReport, ConnectionTarget, Discovered, GattLink,
+    LinkError, NotificationSink, PreferenceOutcome, SCAN_TIMEOUT, matches_target,
 };
 use ns2pro_proto::{Address, LeAddressType, advertisement, gatt::Characteristic};
 use std::{
@@ -215,27 +215,30 @@ impl Bluetooth for WindowsBluetooth {
                         let Some(address) = Address::new(args.BluetoothAddress()?) else {
                             return Ok(());
                         };
-                        if target.is_some_and(|wanted| wanted != address) {
-                            return Ok(());
-                        }
-                        let ad = args.Advertisement()?;
-                        for data in ad.ManufacturerData()? {
-                            if with_buffer(&data.Data()?, |bytes| {
-                                advertisement::parse(data.CompanyId().unwrap_or(0), bytes)
-                            })?
-                            .is_some()
-                            {
-                                let address_type = match args.BluetoothAddressType()? {
-                                    BluetoothAddressType::Public => LeAddressType::Public,
-                                    BluetoothAddressType::Random => LeAddressType::Random,
-                                    _ => continue,
-                                };
-                                let _ = tx.try_send(Ok(Discovered {
-                                    address,
-                                    address_type,
-                                }));
-                                break;
-                            }
+                        let matched =
+                            matches_target(target, address, || -> windows::core::Result<bool> {
+                                let ad = args.Advertisement()?;
+                                for data in ad.ManufacturerData()? {
+                                    if with_buffer(&data.Data()?, |bytes| {
+                                        advertisement::parse(data.CompanyId().unwrap_or(0), bytes)
+                                    })?
+                                    .is_some()
+                                    {
+                                        return Ok(true);
+                                    }
+                                }
+                                Ok(false)
+                            })?;
+                        if matched {
+                            let address_type = match args.BluetoothAddressType()? {
+                                BluetoothAddressType::Public => LeAddressType::Public,
+                                BluetoothAddressType::Random => LeAddressType::Random,
+                                _ => return Ok(()),
+                            };
+                            let _ = tx.try_send(Ok(Discovered {
+                                address,
+                                address_type,
+                            }));
                         }
                         Ok(())
                     },
@@ -254,7 +257,7 @@ impl Bluetooth for WindowsBluetooth {
             )).map_err(ble)?,
         );
         scope.watcher.Start().map_err(ble)?;
-        tokio::time::timeout(Duration::from_secs(30), rx.recv())
+        tokio::time::timeout(SCAN_TIMEOUT, rx.recv())
             .await
             .map_err(|_| BleError::Timeout)?
             .ok_or_else(|| BleError::Platform("Bluetooth watcher ended".into()))?
@@ -305,7 +308,7 @@ impl Bluetooth for WindowsBluetooth {
                 ))
                 .map_err(ble)?,
         );
-        let discovered = tokio::time::timeout(Duration::from_secs(10), async {
+        let discovered = tokio::time::timeout(CONNECT_TIMEOUT, async {
             let services = winrt!(
                 resources
                     .device
@@ -333,15 +336,12 @@ impl Bluetooth for WindowsBluetooth {
                     }
                 }
             }
-            for kind in Characteristic::ALL {
-                if !characteristics.contains_key(&kind) {
-                    return Err(BleError::Platform(format!(
-                        "Required GATT characteristic missing: {:?}",
-                        kind
-                    )));
-                }
-            }
-            Ok(characteristics)
+            Characteristic::check_required(|kind| characteristics.contains_key(&kind)).map_err(
+                |kind| {
+                    BleError::Platform(format!("Required GATT characteristic missing: {:?}", kind))
+                },
+            )?;
+            Ok::<_, BleError>(characteristics)
         })
         .await
         .map_err(|_| BleError::Timeout)??;
