@@ -18,7 +18,7 @@ pub struct Options {
     pub cache_file: PathBuf,
     #[arg(long)]
     pub no_auto_attach: bool,
-    #[arg(long,default_value="0x07",value_parser=parse_flags)]
+    #[arg(long,default_value=default_feature_flags(),value_parser=parse_flags)]
     pub feature_flags: u8,
     #[arg(long, default_value = "info",value_parser=parse_level)]
     pub log_level: String,
@@ -54,6 +54,11 @@ fn parse_level(s: &str) -> Result<String, String> {
     } else {
         Err("expected trace, debug, info, warn or error".into())
     }
+}
+
+fn default_feature_flags() -> &'static str {
+    static DEFAULT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DEFAULT.get_or_init(|| format!("0x{:02x}", ns2pro_proto::command::DEFAULT_FEATURE_FLAGS))
 }
 
 #[cfg(test)]

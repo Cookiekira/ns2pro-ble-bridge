@@ -15,15 +15,6 @@ pub enum AdvertisementMode {
     Wake,
 }
 
-impl AdvertisementMode {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::StandardReconnect => "standard/reconnect",
-            Self::Wake => "wake",
-        }
-    }
-}
-
 /// Parses one manufacturer-specific data entry.
 pub fn parse(company_id: u16, data: &[u8]) -> Option<AdvertisementMode> {
     if company_id != NINTENDO_COMPANY_ID || data.len() <= MODE_OFFSET {
@@ -37,21 +28,6 @@ pub fn parse(company_id: u16, data: &[u8]) -> Option<AdvertisementMode> {
         0x00 => Some(AdvertisementMode::StandardReconnect),
         0x81 => Some(AdvertisementMode::Wake),
         _ => None,
-    }
-}
-
-/// Finds the first matching entry in a manufacturer-data collection.
-pub fn find<'a>(entries: impl IntoIterator<Item = (u16, &'a [u8])>) -> Option<AdvertisementMode> {
-    entries
-        .into_iter()
-        .find_map(|(company, data)| parse(company, data))
-}
-
-/// Display name for a discovered controller, falling back to the advertised mode.
-pub fn display_name(name: Option<&str>, mode: AdvertisementMode) -> String {
-    match name.map(str::trim) {
-        Some(name) if !name.is_empty() => name.to_owned(),
-        _ => format!("Switch 2 Pro Controller ({})", mode.name()),
     }
 }
 
@@ -77,7 +53,6 @@ mod tests {
             parse(0x0553, &data(0x81, 0x057E, 0x2069)),
             Some(AdvertisementMode::Wake)
         );
-        assert_eq!(AdvertisementMode::Wake.name(), "wake");
     }
 
     #[test]
@@ -87,18 +62,5 @@ mod tests {
         assert_eq!(parse(0x0553, &data(0x00, 0x057E, 0x0000)), None);
         assert_eq!(parse(0x0553, &data(0x42, 0x057E, 0x2069)), None);
         assert_eq!(parse(0x0553, &data(0x00, 0x057E, 0x2069)[..9]), None);
-    }
-
-    #[test]
-    fn display_name_falls_back_to_mode() {
-        assert_eq!(display_name(Some("Pro"), AdvertisementMode::Wake), "Pro");
-        assert_eq!(
-            display_name(Some(" "), AdvertisementMode::Wake),
-            "Switch 2 Pro Controller (wake)"
-        );
-        assert_eq!(
-            display_name(None, AdvertisementMode::StandardReconnect),
-            "Switch 2 Pro Controller (standard/reconnect)"
-        );
     }
 }

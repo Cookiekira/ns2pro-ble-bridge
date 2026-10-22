@@ -19,7 +19,7 @@ impl Default for Channels {
     fn default() -> Self {
         Self {
             input: watch::channel(InputSample::default()).0,
-            leds: watch::channel(6).0,
+            leds: watch::channel(ns2pro_proto::command::DEFAULT_LED_PATTERN).0,
             rumble: watch::channel(None).0,
             stats: Arc::new(Mutex::new(Statistics::default())),
         }
