@@ -7,4 +7,5 @@ pub mod session;
 pub mod stats;
 pub mod usb;
 
+pub mod app;
 pub mod rt;

@@ -95,6 +95,82 @@ impl WindowsBluetooth {
         }
         Ok(Self { adapter })
     }
+
+    /// Enumerate adapters, then scan for 500 ms without requiring any controller.
+    pub async fn smoke_test(&self) -> Result<(), BleError> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use windows::Devices::{
+            Bluetooth::{Advertisement::BluetoothLEAdvertisementWatcherStatus, BluetoothError},
+            Enumeration::DeviceInformation,
+        };
+        let selector = BluetoothAdapter::GetDeviceSelector().map_err(ble)?;
+        let adapters = winrt!(DeviceInformation::FindAllAsyncAqsFilter(&selector), ble)?;
+        for adapter in adapters {
+            tracing::info!(id = %adapter.Id().map_err(ble)?, name = %adapter.Name().map_err(ble)?, "Bluetooth adapter");
+        }
+        let mut scope = Watcher {
+            watcher: BluetoothLEAdvertisementWatcher::new().map_err(ble)?,
+            received: None,
+            stopped: None,
+        };
+        scope
+            .watcher
+            .SetScanningMode(BluetoothLEScanningMode::Active)
+            .map_err(ble)?;
+        scope
+            .watcher
+            .SetAllowExtendedAdvertisements(true)
+            .map_err(ble)?;
+        let observed = Arc::new(AtomicU64::new(0));
+        let callback_observed = observed.clone();
+        scope.received = Some(
+            scope
+                .watcher
+                .Received(&TypedEventHandler::new(move |_, _| {
+                    callback_observed.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                }))
+                .map_err(ble)?,
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        scope.stopped = Some(
+            scope
+                .watcher
+                .Stopped(&TypedEventHandler::new(
+                    move |_, args: Ref<BluetoothLEAdvertisementWatcherStoppedEventArgs>| {
+                        let reason = args.as_ref().and_then(|a| a.Error().ok());
+                        let _ = tx.try_send(reason);
+                        Ok(())
+                    },
+                ))
+                .map_err(ble)?,
+        );
+        scope.watcher.Start().map_err(ble)?;
+        tokio::select! {
+            biased;
+            reason = rx.recv() => return Err(BleError::Platform(format!("Bluetooth smoke scan stopped early: {reason:?}; check adapter power and permissions"))),
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+        }
+        if scope.watcher.Status().map_err(ble)? != BluetoothLEAdvertisementWatcherStatus::Started {
+            return Err(BleError::Platform(
+                "Bluetooth smoke watcher did not start scanning".into(),
+            ));
+        }
+        scope.watcher.Stop().map_err(ble)?;
+        let reason = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .map_err(|_| BleError::Timeout)?;
+        if reason != Some(Some(BluetoothError::Success)) {
+            return Err(BleError::Platform(format!(
+                "Bluetooth smoke scan stop failed: {reason:?}"
+            )));
+        }
+        tracing::info!(
+            advertisements = observed.load(Ordering::Relaxed),
+            "Native Bluetooth smoke scan completed (500 ms)"
+        );
+        Ok(())
+    }
 }
 struct Watcher {
     watcher: BluetoothLEAdvertisementWatcher,
