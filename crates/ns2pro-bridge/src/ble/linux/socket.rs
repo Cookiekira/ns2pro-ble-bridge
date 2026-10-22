@@ -112,28 +112,35 @@ impl Socket {
         }
         let socket = Self::from_owned(fd)?;
         if result < 0 {
-            let mut ready = socket.0.writable().await?;
-            let mut error: libc::c_int = 0;
-            let mut len = mem::size_of_val(&error) as libc::socklen_t;
-            // SAFETY: error and len are valid writable storage for SO_ERROR.
-            if unsafe {
-                libc::getsockopt(
-                    socket.fd(),
-                    libc::SOL_SOCKET,
-                    libc::SO_ERROR,
-                    (&mut error as *mut libc::c_int).cast(),
-                    &mut len,
-                )
-            } < 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            ready.clear_ready();
-            if error != 0 {
-                return Err(io::Error::from_raw_os_error(error));
-            }
+            socket.connected().await?;
         }
         Ok(socket)
+    }
+    async fn connected(&self) -> io::Result<()> {
+        let mut ready = self.0.writable().await?;
+        let mut error: libc::c_int = 0;
+        let mut len = mem::size_of_val(&error) as libc::socklen_t;
+        // SAFETY: error and len are valid writable storage for SO_ERROR.
+        if unsafe {
+            libc::getsockopt(
+                self.fd(),
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                (&mut error as *mut libc::c_int).cast(),
+                &mut len,
+            )
+        } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if error != 0 {
+            return Err(io::Error::from_raw_os_error(error));
+        }
+        // SO_ERROR == 0 confirms connection completion, not WouldBlock. Keep
+        // writable readiness for the first ATT request: clearing it here loses
+        // the edge and can leave every subsequent send waiting indefinitely.
+        ready.retain_ready();
+        Ok(())
     }
     pub(super) fn fd(&self) -> i32 {
         self.0.get_ref().as_raw_fd()
@@ -234,6 +241,64 @@ pub(super) fn pair() -> (Socket, Socket) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn first_write_after_nonblocking_connect_preserves_readiness() {
+        use tokio::{
+            io::AsyncReadExt,
+            net::TcpListener,
+            time::{Duration, timeout},
+        };
+
+        // Exercise the native connect-completion and send path without requiring
+        // a Bluetooth adapter: TCP has the same edge-triggered writable state.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        // SAFETY: socket returns a fresh owned descriptor; sockaddr_in is fully
+        // initialized and only borrowed for the connect syscall.
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_INET,
+                libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+                0,
+            )
+        };
+        assert!(fd >= 0);
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let address = libc::sockaddr_in {
+            sin_family: libc::AF_INET as _,
+            sin_port: listener.local_addr().unwrap().port().to_be(),
+            sin_addr: libc::in_addr {
+                s_addr: u32::from_ne_bytes([127, 0, 0, 1]),
+            },
+            sin_zero: [0; 8],
+        };
+        let result = unsafe {
+            libc::connect(
+                fd.as_raw_fd(),
+                (&address as *const libc::sockaddr_in).cast(),
+                mem::size_of_val(&address) as _,
+            )
+        };
+        assert_eq!(result, -1);
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::EINPROGRESS)
+        );
+        let socket = Socket::from_owned(fd).unwrap();
+        socket.connected().await.unwrap();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        let mtu_request = [2, 247, 0];
+        timeout(Duration::from_secs(1), socket.send(&mtu_request))
+            .await
+            .expect("first ATT write must not wait for another writable edge after connect")
+            .unwrap();
+        let mut received = [0; 3];
+        timeout(Duration::from_secs(1), peer.read_exact(&mut received))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received, mtu_request);
+    }
+
     #[tokio::test]
     async fn readiness_packet_boundaries_and_eof() {
         let (a, b) = pair();

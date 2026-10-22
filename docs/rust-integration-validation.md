@@ -1,5 +1,26 @@
 # Rust integration validation — 2026-10-22
 
+## First hardware run and connect-readiness regression
+
+The first user-operated privileged run attached vhci and was recognized by Steam
+as `057e:2069`, but input remained neutral and the controller LEDs kept scanning.
+The captured bridge log showed USB keepalives while BLE receipt rate stayed zero
+and controller initialization never wrote the test cache. This establishes USB
+enumeration, not a working physical-controller session.
+
+A native socket regression test reproduced an indefinite first-write wait after
+nonblocking connection completion: `SO_ERROR == 0` was followed by clearing
+Tokio's edge-triggered writable readiness. Preserve that readiness instead.
+The test uses real loopback TCP and the same connect-completion/send methods,
+requiring neither Bluetooth privileges nor a fake readiness implementation. It
+failed before the fix and passed after it. Linux strict clippy, all **57** tests
+and the release rebuild passed. The previous performance and Windows results
+below remain evidence for their stated revisions, not reruns of this patch.
+Physical BLE initialization/input must be rechecked after restarting the old
+running executable; hardware acceptance is still pending.
+
+## Original integrated delivery record
+
 The Rust replacement is integrated locally on `feat/rust-rewrite`, beginning at
 seed `aba0ad7`. Authority remains GitHub issues #15–#20. This record does not mark
 hardware acceptance complete, close issues, publish artifacts or merge main.
