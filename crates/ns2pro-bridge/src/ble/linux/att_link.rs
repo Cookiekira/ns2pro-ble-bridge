@@ -232,6 +232,45 @@ async fn read_loop(shared: &Shared) {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn concurrent_requests_wait_for_each_reply() {
+        let (socket, peer) = super::super::socket::pair();
+        let shared = Arc::new(Shared {
+            socket,
+            peer_mtu: AtomicU16::new(att::MTU),
+            pending: Mutex::new(None),
+            sinks: Mutex::new(vec![]),
+            transaction: AsyncMutex::new(()),
+            closed: CancellationToken::new(),
+        });
+        let reader_shared = shared.clone();
+        let reader = tokio::spawn(async move { read_loop(&reader_shared).await });
+        let first = [0x12, 1, 0, 1, 0];
+        let second = [0x12, 2, 0, 1, 0];
+        let server = async {
+            let mut p = [0; 16];
+            let n = peer.recv(&mut p).await.unwrap();
+            assert_eq!(&p[..n], first);
+            tokio::task::yield_now().await;
+            assert!(
+                futures::poll!(std::pin::pin!(peer.recv(&mut p))).is_pending(),
+                "second request must wait until the first untagged reply arrives"
+            );
+            peer.send(&[0x13]).await.unwrap();
+            let n = peer.recv(&mut p).await.unwrap();
+            assert_eq!(&p[..n], second);
+            peer.send(&[0x13]).await.unwrap();
+        };
+        let (a, b, ()) = timeout(Duration::from_secs(2), async {
+            tokio::join!(shared.request(&first), shared.request(&second), server)
+        })
+        .await
+        .unwrap();
+        assert_eq!(a.unwrap(), [0x13]);
+        assert_eq!(b.unwrap(), [0x13]);
+        peer.shutdown();
+        reader.await.unwrap();
+    }
+    #[tokio::test]
     async fn concurrent_writes_keep_packet_boundaries_under_backpressure() {
         let (socket, peer) = super::super::socket::pair();
         let buffer: libc::c_int = 4096;
