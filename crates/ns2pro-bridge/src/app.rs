@@ -127,6 +127,22 @@ mod platform {
             })
         }
     }
+    async fn attached_transport<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+        stream: S,
+        channels: Channels,
+        cancel: CancellationToken,
+    ) -> Result<(), AppError> {
+        match serve_urbs(stream, channels, cancel.clone()).await {
+            Err(error) if error.kind() != std::io::ErrorKind::UnexpectedEof => {
+                Err(AppError::Usb(error))
+            }
+            _ if cancel.is_cancelled() => Ok(()),
+            _ => Err(AppError::Usb(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "kernel removed virtual controller",
+            ))),
+        }
+    }
     impl Usb {
         pub async fn run_session(
             self,
@@ -153,14 +169,7 @@ mod platform {
                 }
                 Self::Attached { mut lease, stream } => {
                     let transport = async {
-                        match serve_urbs(stream, channels.clone(), cancel.clone()).await {
-                            Ok(()) if cancel.is_cancelled() => Ok(()),
-                            Ok(()) => Err(AppError::Usb(std::io::Error::new(
-                                std::io::ErrorKind::UnexpectedEof,
-                                "kernel removed virtual controller",
-                            ))),
-                            Err(error) => Err(AppError::Usb(error)),
-                        }
+                        attached_transport(stream, channels.clone(), cancel.clone()).await
                     };
                     let result = run_session(
                         bluetooth,
@@ -176,6 +185,35 @@ mod platform {
                     Ok(())
                 }
             }
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn attached_eof_reports_kernel_removal() {
+            let (stream, peer) = tokio::net::UnixStream::pair().unwrap();
+            drop(peer);
+            let error = attached_transport(stream, Channels::default(), CancellationToken::new())
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "USB transport ended: kernel removed virtual controller"
+            );
+            assert_eq!(error.exit_code(), 1);
+        }
+
+        #[tokio::test]
+        async fn cancelled_attached_transport_exits_cleanly() {
+            let (stream, peer) = tokio::net::UnixStream::pair().unwrap();
+            drop(peer);
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+            attached_transport(stream, Channels::default(), cancel)
+                .await
+                .unwrap();
         }
     }
 }
