@@ -40,6 +40,31 @@ impl AppError {
         }
     }
 }
+// Retain resolution separately from the block: a failed read also releases attach.
+async fn wait_for_identity(channels: &Channels, cancel: &CancellationToken) -> bool {
+    let mut identity = channels.identity.subscribe();
+    loop {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        if matches!(
+            *identity.borrow_and_update(),
+            crate::channels::Identity::Resolved(_)
+        ) {
+            return true;
+        }
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return false,
+            changed = identity.changed() => {
+                if changed.is_err() {
+                    return false;
+                }
+            }
+        }
+    }
+}
+
 async fn run_session<B: crate::ble::Bluetooth, F: Future<Output = Result<(), AppError>>>(
     bluetooth: &B,
     options: &Options,
@@ -94,7 +119,6 @@ mod platform {
         rt::linux::PriorityGuard,
         usb::{session::serve_urbs, vhci::Attached},
     };
-    use tokio_util::either::Either;
 
     pub async fn initialize() -> Result<(Option<PriorityGuard>, LinuxBluetooth), AppError> {
         let priority = PriorityGuard::try_raise();
@@ -106,10 +130,7 @@ mod platform {
     }
     pub enum Usb {
         Listener(tokio::net::TcpListener),
-        Attached {
-            lease: Attached,
-            stream: Either<tokio::net::UnixStream, tokio::net::TcpStream>,
-        },
+        AutoAttach,
     }
     pub async fn usb(options: &Options) -> Result<Usb, AppError> {
         if options.no_auto_attach {
@@ -119,12 +140,7 @@ mod platform {
             tracing::info!(address=%listener.local_addr().map_err(AppError::UsbSetup)?,"USB/IP server listening (busid 1-1)");
             Ok(Usb::Listener(listener))
         } else {
-            let (attached, stream) = Attached::attach().await?;
-            tracing::info!(port = attached.port(), "virtual USB controller attached");
-            Ok(Usb::Attached {
-                lease: attached,
-                stream,
-            })
+            Ok(Usb::AutoAttach)
         }
     }
     async fn attached_transport<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
@@ -167,8 +183,15 @@ mod platform {
                     )
                     .await
                 }
-                Self::Attached { mut lease, stream } => {
+                Self::AutoAttach => {
+                    let mut lease = None;
                     let transport = async {
+                        if !wait_for_identity(&channels, &cancel).await {
+                            return Ok(());
+                        }
+                        let (attached, stream) = Attached::attach().await?;
+                        tracing::info!(port = attached.port(), "virtual USB controller attached");
+                        lease = Some(attached);
                         attached_transport(stream, channels.clone(), cancel.clone()).await
                     };
                     let result = run_session(
@@ -179,7 +202,8 @@ mod platform {
                         channels.clone(),
                     )
                     .await;
-                    let detached = lease.detach();
+                    // Drain controller/USB work before detaching, including on transport error.
+                    let detached = lease.as_mut().map(Attached::detach).transpose();
                     result?;
                     detached?;
                     Ok(())
@@ -276,6 +300,9 @@ mod platform {
                     .await
                     .map_err(AppError::Usb);
             }
+            if !wait_for_identity(channels, cancel).await {
+                return Ok(());
+            }
             let attach = Attached::attach(self.address, cancel.clone());
             tokio::pin!(attach);
             let server = serve(listener, channels.clone(), cancel.clone());
@@ -301,6 +328,60 @@ mod platform {
             result.map_err(AppError::Usb)?;
             detached?;
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::channels::Identity;
+
+    #[tokio::test]
+    async fn attach_gate_waits_for_success_or_fallback() {
+        for block in [Some([0x5a; 64]), None] {
+            let channels = Channels::default();
+            let cancel = CancellationToken::new();
+            let attached = std::cell::Cell::new(false);
+            let attach = async {
+                if wait_for_identity(&channels, &cancel).await {
+                    attached.set(true);
+                }
+            };
+            tokio::pin!(attach);
+            assert!(futures::poll!(&mut attach).is_pending());
+            assert!(!attached.get());
+            channels.identity.send_replace(Identity::Resolved(block));
+            attach.await;
+            assert!(attached.get());
+            // A late subscriber must also see a resolution published before it started.
+            assert!(wait_for_identity(&channels, &cancel).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_identity_never_attaches() {
+        for cancel_first in [false, true] {
+            let channels = Channels::default();
+            let cancel = CancellationToken::new();
+            let attached = std::cell::Cell::new(false);
+            if cancel_first {
+                cancel.cancel();
+            }
+            let attach = async {
+                if wait_for_identity(&channels, &cancel).await {
+                    attached.set(true);
+                }
+            };
+            tokio::pin!(attach);
+            if !cancel_first {
+                assert!(futures::poll!(&mut attach).is_pending());
+                cancel.cancel();
+            }
+            // Cancellation wins even if identity becomes ready before the next poll.
+            channels.identity.send_replace(Identity::Resolved(None));
+            attach.await;
+            assert!(!attached.get());
         }
     }
 }
