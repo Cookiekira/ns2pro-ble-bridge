@@ -21,6 +21,31 @@ running executable; hardware acceptance is still pending.
 
 ## Original integrated delivery record
 
+### Legacy Steam client library diagnosis
+
+After the connect-readiness patch, the user confirmed physical input works with
+the SteamRT3 client, but wanted the legacy client to work as well. Live inspection
+found that the virtual USB node already grants the desktop user read/write ACLs
+and the installed Steam udev rules already contain the `057e:2069` USB rule.
+
+The legacy Steam process loads a 32-bit SDL3, while the RT3 path loads a 64-bit
+build. Both tested SDL libraries report the same revision
+`SDL-release-3.4.0-1576-gab5541ec5`; the driver itself is present in both. With the
+legacy process's library search path, the 32-bit probe reports `Couldn't load
+libusb` and exposes only generic evdev (4 axes, 21 buttons). The bundled old
+32-bit libusb loads but lacks `libusb_interrupt_event_handler`, required by this
+SDL revision's libusb loader. The system has 64-bit libusb but no lib32-libusb.
+
+A controlled test extracted the configured repository's `lib32-libusb 1.0.30-1`
+package into a temporary directory and prepended only its library directory for
+the same 32-bit SDL probe. It then selected
+`SDL_JOYSTICK_HIDAPI_SWITCH2 (ENABLED)` (6 axes, 15 buttons), matching the 64-bit
+probe. USB flash-read timeout warnings were present in both native-driver probes
+and are not claimed resolved by this library fix. No Steam libraries or udev
+rules were overwritten. Installing the system package and restarting the full
+legacy Steam client remains an interactive verification step; this proves the
+library-loading cause and driver selection, not complete Steam gameplay acceptance.
+
 The Rust replacement is integrated locally on `feat/rust-rewrite`, beginning at
 seed `aba0ad7`. Authority remains GitHub issues #15–#20. This record does not mark
 hardware acceptance complete, close issues, publish artifacts or merge main.

@@ -91,6 +91,28 @@ and scans for half a second. Retired native-library diagnostics are removed.
 
 ## Timing and verification
 
+### Steam on Linux: detected controller but no input
+
+The legacy 32-bit Steam client also needs a sufficiently recent **32-bit libusb**
+for SDL's Switch 2 driver. On Arch/CachyOS, install it with:
+
+```sh
+sudo pacman -S --needed lib32-libusb
+```
+
+Then fully exit and restart Steam. The machine can already have the Nintendo
+`057e:2069` USB access rule and 64-bit libusb while this dependency is still
+missing. In the observed failure, Steam's bundled old 32-bit libusb loaded but
+lacked `libusb_interrupt_event_handler`, so SDL logged `Couldn't load libusb`
+and fell back to generic evdev instead of its Switch 2 HIDAPI driver. Running
+that same 32-bit SDL with the current libusb selected the Switch 2 driver.
+The experimental SteamRT3 client used a working 64-bit library path, which hid
+the legacy client's dependency issue; enabling RT3 is not the required fix for
+this particular library-loading failure. Device permissions and other client
+failures must still be diagnosed independently.
+
+### Input timing
+
 Input notifications decode directly into latest state and wake pending USB IN
 requests; idle reports use 4 ms keepalives with unchanged sample timestamps. The
 bridge uses monotonic receipt microseconds for IMU timestamps until controller
