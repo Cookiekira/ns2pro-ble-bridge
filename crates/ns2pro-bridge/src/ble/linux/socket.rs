@@ -1,5 +1,5 @@
 //! Owned nonblocking Bluetooth sockets, integrated directly with Tokio readiness.
-use ns2pro_proto::Address;
+use ns2pro_proto::{Address, LeAddressType};
 use std::{
     io, mem,
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
@@ -18,7 +18,6 @@ const SOL_BLUETOOTH: i32 = 274;
 const BT_SECURITY: i32 = 4;
 const BT_SECURITY_LOW: u8 = 1;
 const ATT_CID: u16 = 4;
-const BDADDR_LE_PUBLIC: u8 = 1;
 
 fn bind<T>(fd: RawFd, address: &T) -> io::Result<()> {
     // SAFETY: callers supply initialized Linux socket address structures, borrowed
@@ -148,11 +147,11 @@ impl Socket {
         &self,
         local: Address,
         remote: Address,
-        address_type: u8,
+        address_type: LeAddressType,
     ) -> io::Result<u16> {
         for (peer, expected, kind) in [
-            (false, local, BDADDR_LE_PUBLIC),
-            (true, remote, address_type),
+            (false, local, LeAddressType::Public.to_mgmt()),
+            (true, remote, address_type.to_mgmt()),
         ] {
             // SAFETY: sockaddr_l2 is plain integer storage, fully initialized.
             let mut address: L2capAddress = unsafe { mem::zeroed() };
@@ -228,13 +227,11 @@ impl Socket {
         bind(fd.as_raw_fd(), &address)?;
         Self::from_owned(fd)
     }
-    pub(super) async fn att(local: Address, remote: Address, address_type: u8) -> io::Result<Self> {
-        if ![1, 2].contains(&address_type) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "fresh LE address type required",
-            ));
-        }
+    pub(super) async fn att(
+        local: Address,
+        remote: Address,
+        address_type: LeAddressType,
+    ) -> io::Result<Self> {
         let fd = Self::create(libc::SOCK_SEQPACKET, BTPROTO_L2CAP)?;
         let security = [BT_SECURITY_LOW, 0]; // struct bt_security { level, key_size }
         setsockopt(fd.as_raw_fd(), SOL_BLUETOOTH, BT_SECURITY, &security)?;
@@ -243,7 +240,7 @@ impl Socket {
             psm: 0,
             address: local.to_le_bytes(),
             cid: ATT_CID.to_le(),
-            address_type: BDADDR_LE_PUBLIC,
+            address_type: LeAddressType::Public.to_mgmt(),
         };
         bind(fd.as_raw_fd(), &local)?;
         let remote = L2capAddress {
@@ -251,7 +248,7 @@ impl Socket {
             psm: 0,
             address: remote.to_le_bytes(),
             cid: ATT_CID.to_le(),
-            address_type,
+            address_type: address_type.to_mgmt(),
         };
         // SAFETY: remote is a valid sockaddr_l2.
         let result = unsafe {

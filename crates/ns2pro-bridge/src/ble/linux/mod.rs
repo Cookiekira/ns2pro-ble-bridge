@@ -65,7 +65,7 @@ impl Bluetooth for LinuxBluetooth {
             self.index,
             ns2pro_proto::mgmt::Device {
                 address: target.address,
-                address_type: target.address_type,
+                address_type: ns2pro_proto::mgmt::AddressType::Le(target.address_type),
             },
         )
         .await?;

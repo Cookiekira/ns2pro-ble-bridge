@@ -52,7 +52,7 @@ impl Bluetooth for FakeBluetooth {
         }
         Ok(Discovered {
             address: target.unwrap_or(address(1)),
-            address_type: 2,
+            address_type: ns2pro_proto::LeAddressType::Random,
         })
     }
     async fn connect(&self, _: &Discovered) -> Result<FakeLink, BleError> {

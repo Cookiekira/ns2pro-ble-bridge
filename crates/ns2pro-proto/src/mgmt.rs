@@ -1,6 +1,6 @@
 //! Linux Bluetooth management wire format (little endian, independent of I/O).
 use crate::{
-    Address,
+    Address, LeAddressType,
     advertisement::{self, AdvertisementMode},
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -20,10 +20,33 @@ pub const STOP_DISCOVERY: u16 = 0x24;
 pub const DEVICE_FOUND: u16 = 0x12;
 pub const LE_DISCOVERY: u8 = 6;
 pub const BUSY: u8 = 10;
+/// Management also represents classic Bluetooth connections (wire value 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressType {
+    BrEdr,
+    Le(LeAddressType),
+}
+impl AddressType {
+    pub fn from_code(code: u8) -> Result<Self, Malformed> {
+        if code == 0 {
+            Ok(Self::BrEdr)
+        } else {
+            LeAddressType::from_mgmt(code)
+                .map(Self::Le)
+                .ok_or(Malformed)
+        }
+    }
+    pub fn code(self) -> u8 {
+        match self {
+            Self::BrEdr => 0,
+            Self::Le(kind) => kind.to_mgmt(),
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Device {
     pub address: Address,
-    pub address_type: u8,
+    pub address_type: AddressType,
 }
 impl Device {
     pub fn decode(p: &[u8]) -> Result<Self, Malformed> {
@@ -33,10 +56,7 @@ impl Device {
             .try_into()
             .map_err(|_| Malformed)?;
         bytes.reverse();
-        let address_type = *p.get(6).ok_or(Malformed)?;
-        if address_type > 2 {
-            return Err(Malformed);
-        }
+        let address_type = AddressType::from_code(*p.get(6).ok_or(Malformed)?)?;
         Ok(Self {
             address: Address::from_be_bytes(bytes),
             address_type,
@@ -45,7 +65,7 @@ impl Device {
     pub fn encode(self) -> [u8; 7] {
         let mut p = [0; 7];
         p[..6].copy_from_slice(&self.address.to_le_bytes());
-        p[6] = self.address_type;
+        p[6] = self.address_type.code();
         p
     }
 }
@@ -200,10 +220,22 @@ mod tests {
         assert!(Frame::decode(&[1, 0, 0, 0, 0, 0, 1]).is_err());
     }
     #[test]
+    fn classic_and_le_management_codes_roundtrip() {
+        for code in 0..=u8::MAX {
+            let mut bytes = [0; 7];
+            bytes[6] = code;
+            if code <= 2 {
+                assert_eq!(Device::decode(&bytes).unwrap().encode(), bytes);
+            } else {
+                assert_eq!(Device::decode(&bytes), Err(Malformed));
+            }
+        }
+    }
+    #[test]
     fn device_address_order() {
         let d = Device {
             address: "01:02:03:04:05:06".parse().unwrap(),
-            address_type: 2,
+            address_type: AddressType::Le(LeAddressType::Random),
         };
         assert_eq!(Device::decode(&d.encode()).unwrap(), d);
     }
@@ -221,7 +253,10 @@ mod tests {
         p[6] = 2;
         p[12] = ad.len() as u8;
         p.extend(ad);
-        assert_eq!(found(&p).unwrap().device.address_type, 2);
+        assert_eq!(
+            found(&p).unwrap().device.address_type,
+            AddressType::Le(LeAddressType::Random)
+        );
         p.pop();
         assert!(found(&p).is_err());
     }
@@ -229,7 +264,7 @@ mod tests {
     fn connections_validate_count_length_and_address_type() {
         let device = Device {
             address: "01:02:03:04:05:06".parse().unwrap(),
-            address_type: 2,
+            address_type: AddressType::Le(LeAddressType::Random),
         };
         let mut payload = vec![1, 0];
         payload.extend(device.encode());

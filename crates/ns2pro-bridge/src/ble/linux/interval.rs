@@ -3,7 +3,7 @@
 use super::socket::Socket;
 use crate::ble::{ConnectionReport, ConnectionTarget, Discovered, PreferenceOutcome};
 use ns2pro_proto::{
-    Address,
+    Address, LeAddressType,
     hci::{ConnectionParameters, Event, Parameters, parse},
 };
 
@@ -39,7 +39,7 @@ enum Step {
 struct Connection {
     handle: u16,
     peer: Address,
-    kind: u8,
+    kind: LeAddressType,
     state: State,
 }
 impl Connection {
@@ -57,8 +57,7 @@ impl Connection {
                 self.state = match self.state {
                     State::Unseen
                         if role == 0
-                            && address_type <= 3
-                            && address_type % 2 == self.kind
+                            && LeAddressType::from_hci_peer(address_type) == Some(self.kind)
                             && address == self.peer.to_le_bytes() =>
                     {
                         State::Live(Some(parameters))
@@ -187,7 +186,7 @@ fn observed(report: &mut ConnectionReport, parameters: Parameters) {
 async fn request(
     events: &Socket,
     peer: Address,
-    address_type: u8,
+    address_type: LeAddressType,
     report: &mut ConnectionReport,
     live_handle: impl Fn() -> io::Result<u16>,
 ) -> io::Result<()> {
@@ -206,17 +205,14 @@ async fn request(
 async fn request_inner(
     events: &Socket,
     peer: Address,
-    address_type: u8,
+    address_type: LeAddressType,
     report: &mut ConnectionReport,
     live_handle: impl Fn() -> io::Result<u16>,
 ) -> io::Result<()> {
-    if ![1, 2].contains(&address_type) {
-        return Err(io::Error::other("invalid LE peer address type"));
-    }
     let mut connection = Connection {
         handle: live_handle()?,
         peer,
-        kind: address_type - 1,
+        kind: address_type,
         state: State::Unseen,
     };
     let mut p = [0; 260];
@@ -330,7 +326,9 @@ mod tests {
         };
         let (result, ()) = timeout(Duration::from_secs(1), async {
             tokio::join!(
-                request(&events, peer(), 1, &mut report, || Ok(0x201)),
+                request(&events, peer(), LeAddressType::Public, &mut report, || Ok(
+                    0x201
+                )),
                 fake_controller
             )
         })
@@ -373,7 +371,7 @@ mod tests {
                 controller.send(&connected(peer(), 0, 0)).await.unwrap();
             }
             let calls = std::cell::Cell::new(0);
-            let result = request(&events, peer(), 1, &mut report, || {
+            let result = request(&events, peer(), LeAddressType::Public, &mut report, || {
                 let count = calls.get();
                 calls.set(count + 1);
                 let live = live.ok_or_else(|| io::Error::from_raw_os_error(libc::EPERM))?;
@@ -410,8 +408,12 @@ mod tests {
                 assert_eq!(controller.recv(&mut p).await.unwrap(), 18);
                 controller.send(&response).await.unwrap();
             };
-            let (result, ()) =
-                tokio::join!(request(&events, peer(), 1, &mut report, || Ok(0x201)), fake);
+            let (result, ()) = tokio::join!(
+                request(&events, peer(), LeAddressType::Public, &mut report, || Ok(
+                    0x201
+                )),
+                fake
+            );
             assert!(result.is_err(), "response {response:02x?}");
             assert_eq!(
                 report.preference,
@@ -447,8 +449,12 @@ mod tests {
             controller.send(&updated(0x202, 6)).await.unwrap();
             tokio::time::sleep(Duration::from_secs(3)).await;
         };
-        let (result, ()) =
-            tokio::join!(request(&events, peer(), 1, &mut report, || Ok(0x201)), fake);
+        let (result, ()) = tokio::join!(
+            request(&events, peer(), LeAddressType::Public, &mut report, || Ok(
+                0x201
+            )),
+            fake
+        );
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
         assert_eq!(report.observed_interval, Some(39));
         assert_eq!(report.preference, PreferenceOutcome::Unconfirmed);
@@ -468,7 +474,7 @@ mod tests {
             let mut state = Connection {
                 handle: 0x201,
                 peer: peer(),
-                kind: address_type % 2,
+                kind: LeAddressType::from_hci_peer(address_type).unwrap(),
                 state: State::Unseen,
             };
             state.observe(&enhanced).unwrap();
@@ -513,7 +519,9 @@ mod tests {
                 controller.send(&updated(handle, 12)).await.unwrap();
             };
             let (result, ()) = tokio::join!(
-                request(&events, peer(), 2, &mut report, || Ok(handle)),
+                request(&events, peer(), LeAddressType::Random, &mut report, || Ok(
+                    handle
+                )),
                 fake
             );
             result.unwrap(); // observed 15ms, never falsely labelled 7.5ms

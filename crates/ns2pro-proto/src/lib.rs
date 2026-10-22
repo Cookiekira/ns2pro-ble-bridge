@@ -16,5 +16,5 @@ pub mod input;
 pub mod mgmt;
 pub mod pairing;
 
-pub use address::Address;
+pub use address::{Address, LeAddressType};
 pub use input::{Buttons, InputState, Stick};

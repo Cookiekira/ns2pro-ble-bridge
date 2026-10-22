@@ -138,15 +138,16 @@ impl Management {
                     }
                     let found = mgmt::found(f.payload)?;
                     // BR/EDR and scan responses without matching manufacturer identity cannot qualify.
-                    if ![1, 2].contains(&found.device.address_type)
-                        || target.is_some_and(|a| a != found.device.address)
-                    {
+                    let mgmt::AddressType::Le(address_type) = found.device.address_type else {
+                        continue;
+                    };
+                    if target.is_some_and(|a| a != found.device.address) {
                         continue;
                     }
                     if mgmt::controller_advertisement(found.eir)?.is_some() {
                         return Ok(Some(Discovered {
                             address: found.device.address,
-                            address_type: found.device.address_type,
+                            address_type,
                         }));
                     }
                 }
@@ -203,7 +204,7 @@ mod tests {
     async fn advertisement(peer: &Socket, address: Address, address_type: u8) {
         let mut p = mgmt::Device {
             address,
-            address_type,
+            address_type: mgmt::AddressType::from_code(address_type).unwrap(),
         }
         .encode()
         .to_vec();
@@ -244,7 +245,7 @@ mod tests {
             result.unwrap(),
             Some(Discovered {
                 address: target,
-                address_type: 2
+                address_type: ns2pro_proto::LeAddressType::Random
             })
         );
     }

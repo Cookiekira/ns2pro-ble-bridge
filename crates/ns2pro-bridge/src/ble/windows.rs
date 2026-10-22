@@ -3,7 +3,7 @@ use super::{
     BleError, Bluetooth, ConnectionReport, ConnectionTarget, Discovered, GattLink, LinkError,
     NotificationSink, PreferenceOutcome,
 };
-use ns2pro_proto::{Address, advertisement, gatt::Characteristic};
+use ns2pro_proto::{Address, LeAddressType, advertisement, gatt::Characteristic};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -226,8 +226,8 @@ impl Bluetooth for WindowsBluetooth {
                             .is_some()
                             {
                                 let address_type = match args.BluetoothAddressType()? {
-                                    BluetoothAddressType::Public => 1,
-                                    BluetoothAddressType::Random => 2,
+                                    BluetoothAddressType::Public => LeAddressType::Public,
+                                    BluetoothAddressType::Random => LeAddressType::Random,
                                     _ => continue,
                                 };
                                 let _ = tx.try_send(Ok(Discovered {
@@ -269,13 +269,8 @@ impl Bluetooth for WindowsBluetooth {
     }
     async fn connect(&self, target: &Discovered) -> Result<Self::Link, BleError> {
         let address_type = match target.address_type {
-            1 => BluetoothAddressType::Public,
-            2 => BluetoothAddressType::Random,
-            other => {
-                return Err(BleError::Platform(format!(
-                    "Unsupported Bluetooth address type {other}"
-                )));
-            }
+            LeAddressType::Public => BluetoothAddressType::Public,
+            LeAddressType::Random => BluetoothAddressType::Random,
         };
         let device = winrt!(
             BluetoothLEDevice::FromBluetoothAddressWithBluetoothAddressTypeAsync(

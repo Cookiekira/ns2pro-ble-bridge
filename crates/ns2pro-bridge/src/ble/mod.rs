@@ -1,5 +1,5 @@
 //! Native Bluetooth boundary. Futures deliberately need not be Send.
-use ns2pro_proto::{Address, gatt::Characteristic};
+use ns2pro_proto::{Address, LeAddressType, gatt::Characteristic};
 use tokio_util::sync::CancellationToken;
 
 /// Connection-time evidence, independent of notification receipt timing.
@@ -31,8 +31,7 @@ pub type NotificationSink = Box<dyn FnMut(&[u8]) + Send + 'static>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Discovered {
     pub address: Address,
-    /// Linux mgmt address type: 1 = LE public, 2 = LE random.
-    pub address_type: u8,
+    pub address_type: LeAddressType,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum BleError {
