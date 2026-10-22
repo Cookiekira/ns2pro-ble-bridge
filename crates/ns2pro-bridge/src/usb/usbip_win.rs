@@ -332,8 +332,9 @@ impl Drop for Attached {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_SEM_TIMEOUT, GetHandleInformation,
+    use windows::Win32::{
+        Foundation::{ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_SEM_TIMEOUT},
+        System::Threading::{EVENT_MODIFY_STATE, OpenEventW},
     };
 
     #[test]
@@ -352,13 +353,22 @@ mod tests {
 
     #[test]
     fn owned_native_event_closes_exactly_at_scope_end() {
-        let event = owned(unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.unwrap());
-        let handle = raw(&event);
-        let mut flags = 0;
-        unsafe { GetHandleInformation(handle, &mut flags) }.unwrap();
+        // Numeric handle values can be reused immediately by another test thread.
+        // A unique named kernel object lets us verify actual lifetime instead.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = windows::core::HSTRING::from(format!(
+            "Local\\Ns2ProHandleTest-{}-{nonce}",
+            std::process::id()
+        ));
+        let event = owned(unsafe { CreateEventW(None, true, false, &name) }.unwrap());
+        let second = owned(unsafe { OpenEventW(EVENT_MODIFY_STATE, false, &name) }.unwrap());
+        drop(second);
         drop(event);
-        let error = unsafe { GetHandleInformation(handle, &mut flags) }.unwrap_err();
-        assert_eq!(error.code(), ERROR_INVALID_HANDLE.to_hresult());
+        let error = unsafe { OpenEventW(EVENT_MODIFY_STATE, false, &name) }.unwrap_err();
+        assert_eq!(error.code(), ERROR_FILE_NOT_FOUND.to_hresult());
     }
 
     #[tokio::test]
