@@ -1,5 +1,16 @@
 # Rust integration validation — 2026-10-22
 
+The identity flash response at `0x13000` intentionally differs from the retained
+VIIPER golden fixture: it returns the physical controller's 64-byte SPI block,
+or the neutral `NS2PRO-BRIDGE-00` fallback after a warning-only read failure.
+Calibration blocks at `0x13080`/`0x130c0` remain synthetic because input is already
+calibrated by the bridge. Linux vhci and Windows usbip-win2 auto-attach wait for
+the first identity resolution (including failure); cancellation before resolution
+attaches nothing, and reconnects retain the attached device. `--no-auto-attach`
+listens immediately and exposes the fallback until identity resolves. Automated
+session/gate tests cover this ordering and passthrough; Steam's displayed physical
+identity still requires a hardware check.
+
 ## First hardware run and connect-readiness regression
 
 The first user-operated privileged run attached vhci and was recognized by Steam
