@@ -2,7 +2,7 @@
 
 完整实现规格已发布为 [GitHub issue #15](https://github.com/Cookiekira/ns2pro-ble-bridge/issues/15)，标签为 `ready-for-agent`。issue 包含用户故事、实现决策和用户确认的会话级测试边界；本文保留详细设计背景，执行与验收以 issue 为准。
 
-状态：方案已按用户决定收敛；本轮只完善 spec，不开始实现。
+状态：Rust 实现已在 feat/rust-rewrite 集成；实际验证及未完成的硬件验收见 docs/rust-integration-validation.md。历史设计背景保留，GitHub issue #15 仍是权威规格。
 第 3 版的决定（2026-10-22）：连接间隔尽量匹配 Switch 2 的 5ms；只有已验证的适配器路径才启用，通用路径回退到标准的 7.5ms 请求。其它采用第 2 版推荐方案：延迟优先、原生接口、Linux 去掉 BlueZ D-Bus（bluer/libdbus）。
 
 ## 0. 目标与非目标

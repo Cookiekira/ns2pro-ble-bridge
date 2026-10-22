@@ -1,91 +1,49 @@
 name: Release
-
 on:
   push:
-    tags:
-      - "v*"
-
+    tags: ['v*']
 permissions:
   contents: write
-
 jobs:
   build:
-    name: Publish ${{ matrix.rid }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - rid: win-x64
-            os: windows-latest
-            publish_file: Ns2Pro.BleBridge.exe
           - rid: linux-x64
             os: ubuntu-latest
-            publish_file: Ns2Pro.BleBridge
+            executable: ns2pro-ble-bridge
           - rid: linux-arm64
             os: ubuntu-24.04-arm
-            publish_file: Ns2Pro.BleBridge
+            executable: ns2pro-ble-bridge
+          - rid: win-x64
+            os: windows-latest
+            executable: ns2pro-ble-bridge.exe
     runs-on: ${{ matrix.os }}
-
     steps:
-      - name: Checkout bridge
-        uses: actions/checkout@v6
-        with:
-          path: src
-          submodules: recursive
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: "10.0.x"
-
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: src/vendor/VIIPER/go.mod
-
-      - name: Publish
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked --workspace
+      - run: cargo build --locked --release -p ns2pro-bridge
+      - name: Name single executable
         shell: pwsh
         run: |
-          $publishDir = Join-Path $env:GITHUB_WORKSPACE "publish-output"
-          dotnet publish (Join-Path $env:GITHUB_WORKSPACE "src/Ns2Pro.BleBridge.csproj") `
-            -c Release -r "${{ matrix.rid }}" -p:ContinuousIntegrationBuild=true `
-            "-p:PublishDir=$publishDir/"
-
-          $published = Join-Path $publishDir "${{ matrix.publish_file }}"
-          if (-not (Test-Path $published)) {
-            throw "Published executable was not found: $published"
-          }
-
-          & $published --verify-native-library
-          if ($LASTEXITCODE -ne 0) {
-            throw "Embedded VIIPER verification failed for ${{ matrix.rid }}"
-          }
-
-          $artifactDir = Join-Path $env:GITHUB_WORKSPACE "artifacts"
-          New-Item -ItemType Directory -Force $artifactDir | Out-Null
-          $asset = Join-Path $artifactDir "Ns2Pro.BleBridge-${{ github.ref_name }}-${{ matrix.rid }}${{ matrix.rid == 'win-x64' && '.exe' || '' }}"
-          Copy-Item $published $asset
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v7
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          $extension = if ('${{ matrix.rid }}' -eq 'win-x64') { '.exe' } else { '' }
+          Copy-Item 'target/release/${{ matrix.executable }}' "artifacts/ns2pro-ble-bridge-${{ github.ref_name }}-${{ matrix.rid }}$extension"
+      - uses: actions/upload-artifact@v7
         with:
-          name: Ns2Pro.BleBridge-${{ github.ref_name }}-${{ matrix.rid }}
-          path: artifacts/Ns2Pro.BleBridge-${{ github.ref_name }}-${{ matrix.rid }}*
+          name: ns2pro-ble-bridge-${{ github.ref_name }}-${{ matrix.rid }}
+          path: artifacts/*
           if-no-files-found: error
-          archive: false
-
   release:
-    name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
-
     steps:
-      - name: Download platform artifacts
-        uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
-
       - name: Publish release assets
         shell: bash
         env:

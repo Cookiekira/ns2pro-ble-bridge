@@ -1,148 +1,132 @@
 # NS2Pro BLE Bridge
 
-Cross-platform CLI for bridging a Switch 2 Pro Controller over BLE to a virtual USB NS2Pro device.
+A single native Rust executable bridges a Switch 2 Pro Controller over BLE to a
+complete virtual USB NS2Pro (Full Speed, Nintendo `057e:2069`). Version 0.2.0 uses
+native Linux Bluetooth/ATT and vhci, or Windows WinRT Bluetooth and usbip-win2.
 
-## Requirements
+Build with a current stable Rust toolchain (edition 2024):
 
-- Windows x64 with [usbip-win2](https://github.com/vadimgrn/usbip-win2), or
-- Linux x64/ARM64 with BlueZ, the distribution's USB/IP tools, and the `vhci-hcd` kernel module
-
-## Usage
-
-Install the platform USB/IP prerequisites first; the bridge uses them to attach the
-virtual USB NS2Pro device to the local USB bus. Linux setup is described in
-[Linux setup](#linux-setup).
-
-Download `Ns2Pro.BleBridge-v0.1.1-win-x64.exe` from the
-[latest GitHub Release](https://github.com/Cookiekira/ns2pro-ble-bridge/releases/latest).
-Put the controller into Bluetooth pairing mode, then run the downloaded executable.
-On Windows:
-
-```powershell
-.\Ns2Pro.BleBridge-v0.1.1-win-x64.exe
+```sh
+cargo build --locked --release -p ns2pro-bridge
+cargo test --locked --workspace
 ```
 
-On Linux:
+The executable is `target/release/ns2pro-ble-bridge` (`.exe` on Windows). No .NET,
+Go, D-Bus library, submodule initialization or separate VIIPER process is needed.
+The release workflow builds Linux x64, Linux arm64 **natively on an ARM runner**,
+and Windows x64, named `ns2pro-ble-bridge-<tag>-<rid>` (Windows adds `.exe`).
+These workflow changes have not been published as a release.
 
-```bash
-chmod +x Ns2Pro.BleBridge-v0.1.1-linux-x64
-./Ns2Pro.BleBridge-v0.1.1-linux-x64
-```
+## Linux
 
-On first use, the bridge scans for a pairing Switch 2 Pro Controller, connects to it,
-pairs it to the local Bluetooth adapter, and caches the controller address. Later runs
-reuse the cached controller. If the cached controller no longer connects, the cache is
-cleared automatically so the next retry scans again.
+A Bluetooth LE adapter and the `vhci-hcd` kernel module are required. Normal local
+attachment uses the kernel sysfs interface, with a stream socketpair and connected
+TCP-fd fallback if the kernel rejects AF_UNIX. It does not invoke `usbip` or BlueZ
+utilities. Bluetooth uses HCI mgmt and fixed-CID ATT, without SMP pairing or D-Bus.
 
-Options:
-
-| Option | Description | Default |
-| --- | --- | --- |
-| `--usb-addr <addr>` | USB server address | `localhost:3241` |
-| `--device-address <mac>` | Connect to a specific BLE controller (debug override) | Auto-discovered or cached controller |
-| `--pair-host` | Pair a cached or explicit controller again | Disabled |
-| `--host-address <mac>` | Override local Bluetooth adapter address for host pairing | Auto-detected |
-| `--forget-device` | Clear the cached BLE controller address | Disabled |
-| `--cache-file <path>` | Controller cache path | Platform local application-data directory |
-| `--no-auto-attach` | Do not automatically attach to the local USB bus | Disabled |
-| `--feature-flags <flags>` | Feature flags to enable | `0x07` |
-| `--log-level <level>` | Log level: `Trace`, `Debug`, `Info`, `Warn`, `Error` | `Info` |
-| `-h`, `--help` | Show help | |
-
-## Linux setup
-
-The bridge talks to BlueZ over the system D-Bus and keeps VIIPER in-process. It does
-not require a separate VIIPER server. Ensure Bluetooth is enabled and the user can
-access the system BlueZ service.
-
-Install USB/IP and load its virtual host-controller driver:
-
-```bash
-# Ubuntu/Debian
-sudo apt install bluez linux-tools-generic
-
-# Fedora
-sudo dnf install bluez usbip
-
-# Arch Linux
-sudo pacman -S bluez bluez-utils usbip
-
+```sh
 sudo modprobe vhci-hcd
+sudo ./target/release/ns2pro-ble-bridge
 ```
 
-The automatic local USB/IP attach normally needs elevated permission. Run the bridge
-with appropriate local policy/capabilities, or use `--no-auto-attach` and attach the
-export manually or from a remote USB/IP client. A typical manual local flow is:
+Put the controller into pairing mode on first use. The bridge pairs the host,
+saves the address, and on later attempts waits for a fresh advertisement before
+connecting. `bluetoothd` may run alongside the bridge; actual coexistence still
+needs the hardware checks below.
 
-```bash
-./Ns2Pro.BleBridge-v0.1.1-linux-x64 --no-auto-attach
-sudo usbip attach -r localhost -b <bus-id>
+For a non-root manual server, grant Bluetooth management permission to the built
+executable (reapply after replacing it):
+
+```sh
+sudo setcap cap_net_admin+ep ./target/release/ns2pro-ble-bridge
+./target/release/ns2pro-ble-bridge --no-auto-attach --usb-addr 0.0.0.0:3241
 ```
 
-### Manual startup
+Manual/remote clients connect to USB/IP port 3241, busid `1-1`. A client using the
+Linux `usbip` utility can use `usbip --tcp-port 3241 list -r HOST` and
+`sudo usbip --tcp-port 3241 attach -r HOST -b 1-1`; that utility is only required on
+such a client. The server is unauthenticated: bind/expose it only to trusted peers.
+Permission errors need root/CAP_NET_ADMIN; attach errors need root and `vhci-hcd`.
+A kernel-initiated virtual-device loss ends the application, while controller loss
+neutralizes input and reconnects. Ctrl+C closes the controller and detaches USB.
 
-The bridge is intentionally run by hand for now. VIIPER starts its USB/IP server
-and performs the local `vhci-hcd` attach in-process; no separate USB/IP client or
-systemd unit is needed.
+## Windows
 
-```bash
-sudo modprobe vhci-hcd
-./Ns2Pro.BleBridge-v0.1.1-linux-x64
+Use a Bluetooth LE adapter and install the signed
+[usbip-win2](https://github.com/vadimgrn/usbip-win2) driver using its installation
+instructions, then run `ns2pro-ble-bridge.exe`. Default mode serves USB/IP and
+attaches through native SetupDi/IOCTL on a blocking worker. Supported released
+request layouts cover v0.9.6.1–v0.9.7.7, v0.9.7.8 and v0.9.8.1. Arbitrary future
+ABIs are not assumed compatible. Driver/access errors include recovery hints.
+`--no-auto-attach` serves the same TCP protocol without driver attachment.
+
+The executable is cross-linked for Windows MSVC and automated tests have run under
+Wine. Native Windows CI is configured to build and run tests; it has not been run
+by this local implementation session. No Windows Bluetooth/driver hardware
+acceptance is claimed. See [Windows evidence](docs/windows-native-validation.md).
+
+## Options
+
+| Option | Default / behavior |
+| --- | --- |
+| `--usb-addr HOST:PORT` | `localhost:3241`; used for manual Linux and Windows serving |
+| `--device-address MAC` | Explicit address overrides cache and discovery selection |
+| `--pair-host` | Pair again, once successfully per process across reconnects |
+| `--host-address MAC` | Pairing host identity override; bypasses adapter identity lookup |
+| `--forget-device` | Remove cached selection before reconnect supervision |
+| `--cache-file PATH` | Local app data / `Ns2Pro.BleBridge/controller-cache.json` |
+| `--no-auto-attach` | Serve TCP USB/IP for manual/remote clients |
+| `--feature-flags FLAGS` | `0x07` (buttons, sticks, IMU); hexadecimal or decimal |
+| `--log-level LEVEL` | `info`; `RUST_LOG` takes precedence |
+| `-h`, `--help` | Show help |
+
+The cache remains JSON `{"address":"AA:BB:CC:DD:EE:FF"}`. Failed cached setup
+invalidates it; cancellation preserves it. Retries use cancellable 1–10 second
+exponential backoff with jitter; established-session loss waits one second.
+Disconnect clears buttons/motion, preserves host LEDs (default `0x06`), and drops
+old rumble. Rumble sends immediately when eligible and then only the latest value
+at least 20 ms apart. Exit codes: 0 normal shutdown, 1 runtime failure, 2 invalid
+parameters or USB setup failure. The hidden `--bt-smoke-test` enumerates adapters
+and scans for half a second. Retired native-library diagnostics are removed.
+
+## Timing and verification
+
+Input notifications decode directly into latest state and wake pending USB IN
+requests; idle reports use 4 ms keepalives with unchanged sample timestamps. The
+bridge uses monotonic receipt microseconds for IMU timestamps until controller
+timestamp semantics are verified. Debug logs every five seconds report BLE rate,
+interarrival variation, receipt-to-USB-write p50/p99, input URB rate, keepalives and
+rumble writes. These measurements exclude wireless transit and host consumption.
+
+The target is 5 ms BLE only on a verified adapter/firmware-specific path; **no such
+path is implemented or verified**. Standard 7.5 ms is the specified Linux fallback,
+but mgmt preference writes cannot safely restore unknown shared state on the
+examined kernel. This implementation logs the unavailable optimization and connects
+with system-allowed parameters; the fallback-request acceptance item remains open.
+Windows requests ThroughputOptimized best-effort. Actual intervals remain unknown
+without native events/HCI evidence; report rates are not interval measurements.
+
+Tests compare all exported USB fixture scenarios and supported descriptors, with
+explicit STALL/pending bulk/UNLINK differences. Fake GATT plus an in-memory USB/IP
+peer exercises initialization/pairing, input/output, disconnect, cache and lifecycle.
+Release measurements on the recorded Linux environment achieved sub-0.5 ms p99
+and zero measured steady-state allocations; this does not establish real controller
+or kernel latency. Reproduce with:
+
+```sh
+cargo test --release -p ns2pro-bridge --test linux_latency -- --ignored --nocapture --test-threads=1
 ```
 
-On first use, put the controller in Bluetooth pairing mode. The bridge discovers it,
-runs the NS2Pro host-pairing exchange using the selected adapter's address, and stores
-the controller address. Later runs reconnect from that cache. Use `--pair-host` to
-repeat host pairing, `--forget-device` to clear the cache, or `--device-address` and
-`--host-address` for explicit overrides.
+Linux hardware acceptance is **not complete**: this session could enumerate hci0,
+but lacked CAP_NET_ADMIN for discovery and had no vhci sysfs host. No controller
+firmware, attach/enumeration/SDL, reconnect, output or actual interval acceptance
+is claimed. Follow the [hardware checklist](docs/linux-hardware-checklist.md),
+[Linux evidence](docs/rust-linux-implementation.md), and
+[integration record](docs/rust-integration-validation.md).
 
-For hardware validation, follow the [Linux manual acceptance checklist](docs/linux-hardware-checklist.md).
+## License and attribution
 
-## Build from source
-
-Build requirements:
-
-- .NET10 SDK
-- Windows SDK `10.0.26100.0` when publishing `win-x64`
-- A C compiler supported by Go's `c-shared` build mode
-- Go toolchain
-- VIIPER submodule initialized
-
-Clone the repository with submodules, then publish the bridge:
-
-```bash
-git clone --recurse-submodules https://github.com/Cookiekira/ns2pro-ble-bridge.git
-cd ns2pro-ble-bridge
-dotnet publish Ns2Pro.BleBridge.csproj -c Release -r linux-x64
-dotnet publish Ns2Pro.BleBridge.csproj -c Release -r linux-arm64
-# On Windows:
-dotnet publish Ns2Pro.BleBridge.csproj -c Release -r win-x64
-```
-
-If you already cloned the repository without submodules, initialize VIIPER before
-building:
-
-```powershell
-git submodule update --init --recursive
-```
-
-By default, the build uses `vendor/VIIPER`. To build against a different VIIPER
-checkout, set `VIIPER_SOURCE_ROOT` or pass the path as an MSBuild property:
-
-```bash
-VIIPER_SOURCE_ROOT=/path/to/VIIPER dotnet publish Ns2Pro.BleBridge.csproj -c Release -r linux-x64
-dotnet publish Ns2Pro.BleBridge.csproj -c Release -r linux-x64 /p:ViiperSourceRoot=/path/to/VIIPER
-```
-
-The build compiles `lib/viiper` as `libVIIPER.dll` on Windows or `libVIIPER.so` on
-Linux and embeds the platform library in the published executable.
-
-## Credits
-
-Thanks to [switch2_controller_research](https://github.com/ndeadly/switch2_controller_research)
-for the Switch 2 controller protocol research and [VIIPER](https://github.com/Cookiekira/VIIPER)
-for the native virtual USB backend.
-
-## License
-
-Licensed under GPL-3.0-or-later. See [LICENSE.txt](LICENSE.txt).
+GPL-3.0-or-later; see [LICENSE.txt](LICENSE.txt) and
+[THIRD_PARTY.md](THIRD_PARTY.md). USB behavior and fixtures derive from VIIPER;
+protocol research credits include
+[switch2_controller_research](https://github.com/ndeadly/switch2_controller_research).

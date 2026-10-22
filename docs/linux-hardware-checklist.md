@@ -1,32 +1,44 @@
-# Linux hardware acceptance checklist
+# Linux hardware acceptance (pending)
 
-Record the bridge revision, Linux distribution/kernel, BlueZ version, CPU architecture,
-Bluetooth adapter, and controller firmware before starting.
+Record revision, distribution/kernel, architecture, adapter model/firmware,
+controller firmware, privileges and whether bluetoothd is running for every run.
+The implementation session has not completed this checklist; see
+[rust-linux-implementation.md](rust-linux-implementation.md) for exact evidence.
 
 ## Prerequisites
 
-- [ ] BlueZ is running and the adapter is powered.
-- [ ] The `usbip` command is installed.
-- [ ] `vhci-hcd` is loaded (`lsmod | rg vhci_hcd`).
-- [ ] The bridge can auto-attach with the chosen privileges, or `--no-auto-attach` is used.
-- [ ] No other process has an active connection to the controller.
+- [ ] Root for auto-attach, or CAP_NET_ADMIN for `--no-auto-attach` Bluetooth.
+- [ ] A usable LE adapter; `vhci-hcd` loaded for local auto-attach.
+- [ ] No other active controller session. Bluetoothd is optional, not a dependency.
 
-## Controller and virtual USB
+## Native and USB path
 
-- [ ] First pairing discovers the controller and completes host pairing.
-- [ ] A later run reconnects using the cached controller without pairing mode.
-- [ ] Buttons, both sticks, and IMU motion appear on the virtual NS2Pro device.
-- [ ] Rumble from the virtual device is reproduced by the physical controller.
-- [ ] Player LED changes from the virtual device reach the physical controller.
-- [ ] Powering off or moving the controller out of range ends the session and reconnects after return.
-- [ ] `--forget-device` clears the cache and the next run returns to discovery.
-- [ ] `--pair-host` repeats pairing for a cached controller.
-- [ ] `--device-address` connects to the specified controller.
-- [ ] `--host-address` overrides the BlueZ adapter address used for pairing.
-- [ ] `usbip list -r localhost` shows the export and the attached device is visible to `lsusb`.
-- [ ] `--no-auto-attach` permits a manual or remote USB/IP attach.
+- [ ] Hidden `--bt-smoke-test` enumerates adapters and scans for 500 ms.
+- [ ] Discovery identifies Nintendo advertisements and correct LE address type.
+- [ ] Pairing initializes a controller; subsequent cached attempts require a fresh advertisement.
+- [ ] AF_UNIX socketpair attaches through vhci sysfs; record exact kernel result.
+- [ ] If rejected, connected local TCP-fd fallback attaches; no usbip executable invoked.
+- [ ] Full Speed `057e:2069` enumerates, both HID/bulk interfaces work, SDL/game initializes.
+- [ ] Buttons, both calibrated sticks, battery/charging and IMU reach host correctly.
+- [ ] Host rumble reaches controller and latest-value 20 ms throttle remains stable.
+- [ ] Host player LEDs reach controller and replay after reconnect.
+- [ ] Loss publishes neutral buttons/sticks/motion, then reconnects after return.
+- [ ] Old rumble cannot replay; pending bulk/IN/UNLINK behave correctly.
+- [ ] `--forget-device`, explicit address, host override and pair-host-once behave correctly.
+- [ ] Failed cache setup invalidates cache; cancellation preserves cache.
+- [ ] Ctrl+C during scan/setup/steady use releases controller and detaches owned USB port.
+- [ ] Kernel-initiated USB device loss is fatal rather than silently reattaching.
+- [ ] Manual/remote TCP attachment works at configured port, busid `1-1`.
+- [ ] Run with bluetoothd and separately without it; record coexistence effects.
 
-## Architectures
+## Timing and architecture
 
-- [ ] The `linux-x64` release artifact completes the checklist on x64 hardware.
-- [ ] The `linux-arm64` release artifact completes the checklist on ARM64 hardware.
+- [ ] Capture actual LE connection interval through native events/HCI evidence.
+- [ ] Reconcile Linux's ownership-safe preference limitation before claiming standard 7.5 ms request acceptance.
+- [ ] Rejection of optimization allows system-parameter connection to continue.
+- [ ] Verified 5 ms hardware path: currently unavailable; do not send generic interval 4.
+- [ ] Verify controller IMU timestamp semantics or retain monotonic receipt fallback.
+- [ ] Record BLE arrival rate/jitter and receipt-to-USB-write p50/p99 separately from interval.
+- [ ] Linux x64 hardware acceptance; Linux arm64 native build and hardware acceptance.
+
+Windows delivery has separate build/test evidence; no Windows hardware claim is made.
