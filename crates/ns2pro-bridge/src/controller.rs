@@ -1,6 +1,6 @@
 //! One controller session, command serialization, initialization and output routing.
 use crate::{
-    ble::{ConnectionReport, GattLink, LinkError, NotificationSink},
+    ble::{ConnectionReport, GattLink, LinkError},
     channels::{Channels, Identity},
 };
 use ns2pro_proto::{
@@ -44,29 +44,6 @@ impl<'a, L: GattLink> Connection<'a, L> {
     }
     pub fn report(&self) -> ConnectionReport {
         self.link.connection_report()
-    }
-    fn input_sink(link: &L, channels: &Channels, calibration: Calibration) -> NotificationSink {
-        let channels = channels.clone();
-        let origin = std::time::Instant::now();
-        let closed = link.closed();
-        Box::new(
-            move |bytes| match parse_common_report(bytes, &calibration) {
-                Ok(state) => {
-                    channels.input.send_modify(|sample| {
-                        // Check under the watch lock so an in-flight WinRT callback cannot
-                        // publish stale held input after disconnect's neutral reset.
-                        if closed.is_cancelled() {
-                            return;
-                        }
-                        sample.state = state;
-                        sample.seq = sample.seq.wrapping_add(1);
-                        sample.motion_timestamp_us = origin.elapsed().as_micros() as u32;
-                        channels.stats.lock().unwrap().receipt(sample.seq);
-                    });
-                }
-                Err(error) => tracing::warn!(%error,"discarding malformed input"),
-            },
-        )
     }
     pub async fn disconnect(self) {
         self.channels.stats.lock().unwrap().disconnected();
@@ -167,10 +144,30 @@ impl<'a, L: GattLink> Controller<'a, L> {
         channels.identity.send_replace(Identity::Resolved(identity));
         self.command(&command::set_feature_mask(0xff)).await?;
         self.command(&command::enable_features(flags)).await?;
+        let channels = channels.clone();
+        let origin = std::time::Instant::now();
+        let closed = self.link.closed();
         self.link
             .subscribe(
                 Characteristic::Input,
-                Connection::input_sink(self.link, channels, calibration),
+                Box::new(
+                    move |bytes| match parse_common_report(bytes, &calibration) {
+                        Ok(state) => {
+                            channels.input.send_modify(|sample| {
+                                // Check under the watch lock so an in-flight WinRT callback cannot
+                                // publish stale held input after Connection::disconnect's neutral reset.
+                                if closed.is_cancelled() {
+                                    return;
+                                }
+                                sample.state = state;
+                                sample.seq = sample.seq.wrapping_add(1);
+                                sample.motion_timestamp_us = origin.elapsed().as_micros() as u32;
+                                channels.stats.lock().unwrap().receipt(sample.seq);
+                            });
+                        }
+                        Err(error) => tracing::warn!(%error,"discarding malformed input"),
+                    },
+                ),
             )
             .await?;
         Ok(())
