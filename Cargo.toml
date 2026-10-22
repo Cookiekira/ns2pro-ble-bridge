@@ -14,7 +14,6 @@ ns2pro-proto = { path = "crates/ns2pro-proto" }
 ns2pro-usb = { path = "crates/ns2pro-usb" }
 
 aes = "0.9"
-backon = "1.6"
 libc = "0.2"
 clap = { version = "4.6", features = ["derive"] }
 dirs = "7"
@@ -30,7 +29,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = "1"
 windows = "0.62"
-zerocopy = { version = "0.8", features = ["derive"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

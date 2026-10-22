@@ -13,7 +13,6 @@ path = "src/main.rs"
 [dependencies]
 ns2pro-proto.workspace = true
 ns2pro-usb.workspace = true
-backon.workspace = true
 clap.workspace = true
 dirs.workspace = true
 futures.workspace = true

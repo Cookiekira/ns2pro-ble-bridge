@@ -88,8 +88,8 @@
 | `R`、`Context.Tag`、`Layer` | 服务用 trait 定义（`Bluetooth`、`GattLink`），泛型静态分发；只在 `app.rs` 组装 |
 | `Scope`、`acquireRelease` | RAII + 显式幂等的 `async fn close()`（BLE 断开、vhci detach、恢复本进程改动过的设备 conn param；不能覆盖其它管理进程的新设置） |
 | Fiber、结构化并发 | `CancellationToken` + `JoinSet` |
-| `Schedule` | `backon` 指数退避，只包住"连接手柄" |
-| `Schema` | `zerocopy`（二进制）、`serde`（JSON 缓存） |
+| `Schedule` | 会话监督循环直接计算有界指数退避和 jitter，不引入额外重试层 |
+| `Schema` | 显式长度校验与字段字节序编解码（二进制）、`serde`（JSON 缓存） |
 | 纯核心 + 外壳 | **sans-IO**：协议、设备、URB 调度、ATT/mgmt 编解码都是纯状态机；时间和随机数由外部注入 |
 
 明确不做：Effect monad/HKT、fp 风格的库、`pipe` 组合子链。
@@ -104,10 +104,10 @@ crates/
 fixtures/viiper/   从现有 Go 实现导出的基准字节（已生成）
 ```
 
-纯 crate 只依赖 `aes`、`uuid`、`zerocopy`、`thiserror`，拿不到 tokio。
+纯 crate 只依赖 `aes`、`uuid`、`thiserror`，拿不到 tokio。
 
 外壳的依赖：
-- 通用：`tokio` 1.54（current_thread）、`tokio-util`、`futures`、`backon`、`clap` 4.6、`tracing`、`tracing-subscriber`、`serde`/`serde_json`、`dirs` 7、`getrandom` 0.4。
+- 通用：`tokio` 1.54（current_thread）、`tokio-util`、`futures`、`clap` 4.6、`tracing`、`tracing-subscriber`、`serde`/`serde_json`、`dirs` 7、`getrandom` 0.4。
 - Linux：`libc`，用于 AF_BLUETOOTH socket、`sched_setscheduler`，配合 tokio `AsyncFd`。
 - Windows：`windows` 0.62，用于 WinRT Bluetooth、`IBufferByteAccess`、SetupDi、DeviceIoControl、Avrt。
 
@@ -207,7 +207,7 @@ trait GattLink: 'static {
 2. 连接后初始化：Init → 订阅 CommandResponse → 设置 LED → 读校准（失败时只告警）→ `set_feature_mask(0xFF)` → `enable_features(--feature-flags)` → 订阅 Input。
 3. 来源为扫描或指定了 `--pair-host` 时，执行 host 配对。**改动**：`--pair-host` 在一个进程内只配对一次。
 4. 成功后写缓存。来源是缓存且连接失败（不是因为取消）时删除缓存，下次改为扫描。
-5. 第 1–4 步用 `backon` 指数退避重试：1s → 10s，带 jitter，次数不限。现在是固定 3s。
+5. 第 1–4 步由会话监督循环计算指数退避重试：1s → 10s，带 jitter，次数不限；不再是旧版固定 3s。
 6. 会话正常结束后等 1s 再重新开始。
 
 ### 6.5 Linux BLE：只用内核接口
