@@ -397,15 +397,20 @@ mod tests {
         let run = run_attached(adapter, &channels, &cancel, drain(&events, &cancel));
         tokio::pin!(run);
         assert!(futures::poll!(&mut run).is_pending());
-        events.assert(&["attach", "accept"]);
+        // select! may poll either pending branch first; both must have started.
+        assert!(matches!(
+            events.0.borrow().as_slice(),
+            ["attach", "accept"] | ["accept", "attach"]
+        ));
         cancel.cancel();
         run.await.unwrap();
         let events = events.0.borrow();
-        assert!(events.contains(&"lease"));
-        assert!(
-            events.iter().position(|e| *e == "drain").unwrap()
-                < events.iter().position(|e| *e == "detach").unwrap()
-        );
+        assert_eq!(events.len(), 5);
+        let lease = events.iter().position(|e| *e == "lease").unwrap();
+        let drained = events.iter().position(|e| *e == "drain").unwrap();
+        let detached = events.iter().position(|e| *e == "detach").unwrap();
+        assert!(lease < detached);
+        assert!(drained < detached);
         assert_eq!(events.last(), Some(&"detach"));
     }
 
