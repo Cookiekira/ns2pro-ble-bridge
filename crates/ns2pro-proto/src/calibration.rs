@@ -36,7 +36,14 @@ impl StickCalibration {
             (i32::from(x), i32::from(y))
         };
         let ((center_x, center_y), (max_x, max_y), (min_x, min_y)) = (pair(0), pair(3), pair(6));
-        Some(Self { center_x, center_y, max_x, max_y, min_x, min_y })
+        Some(Self {
+            center_x,
+            center_y,
+            max_x,
+            max_y,
+            min_x,
+            min_y,
+        })
     }
 }
 
@@ -48,14 +55,24 @@ pub struct Calibration {
 
 impl Calibration {
     /// Combines factory blocks with an optional user block; user data wins when its magic is present.
-    pub fn from_blocks(primary_factory: &[u8], secondary_factory: &[u8], user: Option<&[u8]>) -> Option<Self> {
+    pub fn from_blocks(
+        primary_factory: &[u8],
+        secondary_factory: &[u8],
+        user: Option<&[u8]>,
+    ) -> Option<Self> {
         let mut calibration = Self {
-            primary: Some(StickCalibration::decode(primary_factory.get(FACTORY_OFFSET..)?)?),
-            secondary: Some(StickCalibration::decode(secondary_factory.get(FACTORY_OFFSET..)?)?),
+            primary: Some(StickCalibration::decode(
+                primary_factory.get(FACTORY_OFFSET..)?,
+            )?),
+            secondary: Some(StickCalibration::decode(
+                secondary_factory.get(FACTORY_OFFSET..)?,
+            )?),
         };
         if let Some(user) = user.filter(|u| u.len() >= USER_BLOCK_MIN_LEN) {
             let user_stick = |offset: usize| {
-                (user[offset..offset + 2] == USER_MAGIC).then(|| StickCalibration::decode(&user[offset + 2..])).flatten()
+                (user[offset..offset + 2] == USER_MAGIC)
+                    .then(|| StickCalibration::decode(&user[offset + 2..]))
+                    .flatten()
             };
             if let Some(stick) = user_stick(USER_PRIMARY_OFFSET) {
                 calibration.primary = Some(stick);
@@ -100,13 +117,17 @@ mod tests {
         let mut user = vec![0u8; 0x40];
         user[0x20..0x22].copy_from_slice(&USER_MAGIC);
         user[0x22..0x2B].copy_from_slice(&encoded(1800, 1100, 1200));
-        let calibration = Calibration::from_blocks(&factory(2000), &factory(2100), Some(&user)).unwrap();
+        let calibration =
+            Calibration::from_blocks(&factory(2000), &factory(2100), Some(&user)).unwrap();
         assert_eq!(calibration.primary.unwrap().center_x, 2000);
         assert_eq!(calibration.secondary.unwrap().center_x, 1800);
     }
 
     #[test]
     fn short_factory_block_is_rejected() {
-        assert_eq!(Calibration::from_blocks(&[0; 0x30], &factory(2000), None), None);
+        assert_eq!(
+            Calibration::from_blocks(&[0; 0x30], &factory(2000), None),
+            None
+        );
     }
 }

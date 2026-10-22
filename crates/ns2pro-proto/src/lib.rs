@@ -12,6 +12,7 @@ pub mod calibration;
 pub mod command;
 pub mod gatt;
 pub mod input;
+pub mod mgmt;
 pub mod pairing;
 
 pub use address::Address;

@@ -17,7 +17,13 @@ pub enum Characteristic {
 }
 
 impl Characteristic {
-    pub const ALL: [Self; 5] = [Self::Init, Self::Input, Self::Vibration, Self::Command, Self::CommandResponse];
+    pub const ALL: [Self; 5] = [
+        Self::Init,
+        Self::Input,
+        Self::Vibration,
+        Self::Command,
+        Self::CommandResponse,
+    ];
 
     /// Characteristics the bridge subscribes to.
     pub const NOTIFYING: [Self; 2] = [Self::Input, Self::CommandResponse];

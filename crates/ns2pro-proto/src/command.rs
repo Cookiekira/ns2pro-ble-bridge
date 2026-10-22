@@ -94,16 +94,34 @@ mod tests {
 
     #[test]
     fn frames_commands() {
-        assert_eq!(set_player_leds(0x09), [0x09, 0x91, 1, 0x07, 0, 8, 0, 0, 0x09, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(enable_features(0x07), [0x0C, 0x91, 1, 0x04, 0, 4, 0, 0, 0x07, 0, 0, 0]);
-        assert_eq!(spi_read(0x13080, 0x40)[8..], [0x40, 0x7E, 0, 0, 0x80, 0x30, 0x01, 0x00]);
+        assert_eq!(
+            set_player_leds(0x09),
+            [0x09, 0x91, 1, 0x07, 0, 8, 0, 0, 0x09, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            enable_features(0x07),
+            [0x0C, 0x91, 1, 0x04, 0, 4, 0, 0, 0x07, 0, 0, 0]
+        );
+        assert_eq!(
+            spi_read(0x13080, 0x40)[8..],
+            [0x40, 0x7E, 0, 0, 0x80, 0x30, 0x01, 0x00]
+        );
     }
 
     #[test]
     fn validates_responses() {
-        assert_eq!(response_payload(&[0x0C, 0, 0, 0x04, 0, 0, 0, 0, 9], 0x0C, 0x04), Ok(&[9u8][..]));
-        assert!(matches!(response_payload(&[0x0C, 0, 0], 0x0C, 0x04), Err(ResponseError::Short(_))));
-        assert!(matches!(response_payload(&[0x0D, 0, 0, 0x04, 0, 0, 0, 0], 0x0C, 0x04), Err(ResponseError::Unexpected(_))));
+        assert_eq!(
+            response_payload(&[0x0C, 0, 0, 0x04, 0, 0, 0, 0, 9], 0x0C, 0x04),
+            Ok(&[9u8][..])
+        );
+        assert!(matches!(
+            response_payload(&[0x0C, 0, 0], 0x0C, 0x04),
+            Err(ResponseError::Short(_))
+        ));
+        assert!(matches!(
+            response_payload(&[0x0D, 0, 0, 0x04, 0, 0, 0, 0], 0x0C, 0x04),
+            Err(ResponseError::Unexpected(_))
+        ));
     }
 
     #[test]
@@ -112,8 +130,17 @@ mod tests {
         response.extend_from_slice(&0x13080u32.to_le_bytes());
         response.extend_from_slice(&[7, 8, 9]);
         assert_eq!(spi_read_data(&response, 0x13080), Ok(&[7u8, 8, 9][..]));
-        assert_eq!(spi_read_data(&response, 0x130C0), Err(ResponseError::SpiAddress { want: 0x130C0, got: 0x13080 }));
-        assert_eq!(spi_read_data(&response[..14], 0x13080), Err(ResponseError::ShortSpi));
+        assert_eq!(
+            spi_read_data(&response, 0x130C0),
+            Err(ResponseError::SpiAddress {
+                want: 0x130C0,
+                got: 0x13080
+            })
+        );
+        assert_eq!(
+            spi_read_data(&response[..14], 0x13080),
+            Err(ResponseError::ShortSpi)
+        );
     }
 
     #[test]
