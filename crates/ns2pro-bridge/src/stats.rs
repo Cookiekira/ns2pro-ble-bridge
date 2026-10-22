@@ -2,6 +2,7 @@
 use std::time::{Duration, Instant};
 #[derive(Debug)]
 pub struct Statistics {
+    pub connection: crate::ble::ConnectionReport,
     start: Instant,
     last: Option<Instant>,
     pub reports: u64,
@@ -19,6 +20,7 @@ pub struct Statistics {
 impl Default for Statistics {
     fn default() -> Self {
         Self {
+            connection: Default::default(),
             start: Instant::now(),
             last: None,
             reports: 0,
@@ -90,7 +92,13 @@ impl Statistics {
             urb_hz = self.urbs as f64 / secs,
             keepalives = self.keepalives,
             rumble_hz = self.rumble_writes as f64 / secs,
-            observed_interval = "unknown",
+            target_interval = ?self.connection.target,
+            preference_result = ?self.connection.preference,
+            observed_interval_ms = %self
+                .connection
+                .observed_interval
+                .map(|units| (f64::from(units) * 1.25).to_string())
+                .unwrap_or_else(|| "unknown".into()),
             "bridge statistics (receipt to completed socket write; excludes BLE and host)"
         );
     }

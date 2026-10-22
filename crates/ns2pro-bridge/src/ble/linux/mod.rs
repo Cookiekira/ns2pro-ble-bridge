@@ -65,7 +65,7 @@ impl Bluetooth for LinuxBluetooth {
             self.index,
             ns2pro_proto::mgmt::Device {
                 address: target.address,
-                address_type: target.address_type,
+                address_type: ns2pro_proto::mgmt::AddressType::Le(target.address_type),
             },
         )
         .await?;
@@ -77,11 +77,12 @@ impl Bluetooth for LinuxBluetooth {
         )
         .await
         .map_err(|_| BleError::Timeout)??;
-        if let Some(observer) = observer {
-            observer.request(&socket, self.address, target).await;
-        }
+        let report = match observer {
+            Some(observer) => observer.request(&socket, self.address, target).await,
+            None => interval::unavailable(),
+        };
         tracing::debug!(address=%target.address, "raw ATT connected; discovering GATT");
-        let link = AttLink::open(socket)
+        let link = AttLink::open(socket, report)
             .await
             .map_err(|e| BleError::Platform(e.to_string()))?;
         tracing::debug!(address=%target.address, "GATT discovery complete");

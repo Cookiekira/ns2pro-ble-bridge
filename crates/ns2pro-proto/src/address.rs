@@ -96,3 +96,65 @@ mod tests {
         assert_eq!(Address::from_be_bytes([1, 2, 3, 4, 5, 6]), address);
     }
 }
+
+/// LE identity kind, independent of the transport's numeric encoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LeAddressType {
+    Public,
+    Random,
+}
+impl LeAddressType {
+    /// Linux management and L2CAP use 1 for LE public and 2 for LE random.
+    pub const fn from_mgmt(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Public),
+            2 => Some(Self::Random),
+            _ => None,
+        }
+    }
+    pub const fn to_mgmt(self) -> u8 {
+        match self {
+            Self::Public => 1,
+            Self::Random => 2,
+        }
+    }
+    /// HCI peer types include resolved public (2) and resolved random (3).
+    pub const fn from_hci_peer(code: u8) -> Option<Self> {
+        match code {
+            0 | 2 => Some(Self::Public),
+            1 | 3 => Some(Self::Random),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod le_address_tests {
+    use super::LeAddressType;
+
+    #[test]
+    fn transport_encodings_are_explicit_and_bounded() {
+        use LeAddressType::{Public, Random};
+        for kind in [Public, Random] {
+            assert_eq!(LeAddressType::from_mgmt(kind.to_mgmt()), Some(kind));
+        }
+        for code in 0..=u8::MAX {
+            assert_eq!(
+                LeAddressType::from_mgmt(code),
+                match code {
+                    1 => Some(Public),
+                    2 => Some(Random),
+                    _ => None,
+                }
+            );
+            assert_eq!(
+                LeAddressType::from_hci_peer(code),
+                match code {
+                    0 | 2 => Some(Public),
+                    1 | 3 => Some(Random),
+                    _ => None,
+                }
+            );
+        }
+    }
+}

@@ -25,6 +25,7 @@ struct Data {
 struct Fake {
     data: Arc<Mutex<Data>>,
     closed: CancellationToken,
+    report: ConnectionReport,
 }
 impl Fake {
     fn notify(&self, bytes: &[u8]) {
@@ -35,6 +36,9 @@ impl Fake {
     }
 }
 impl GattLink for Fake {
+    fn connection_report(&self) -> ConnectionReport {
+        self.report
+    }
     async fn write(&self, ch: Characteristic, bytes: &[u8]) -> Result<(), LinkError> {
         let mut d = self.data.lock().unwrap();
         d.writes.push((ch, bytes.to_vec()));
@@ -398,6 +402,7 @@ async fn rumble_leading_edge_latest_value_twenty_ms_and_setup_output_replay() {
 #[derive(Default)]
 struct FakeBluetooth {
     link: Fake,
+    report: ConnectionReport,
     queries: std::sync::atomic::AtomicUsize,
     scans: Mutex<Vec<Option<Address>>>,
     fail: std::sync::atomic::AtomicBool,
@@ -411,12 +416,13 @@ impl Bluetooth for FakeBluetooth {
         }
         Ok(Discovered {
             address: target.unwrap_or(Address::new(0x123456789abc).unwrap()),
-            address_type: 2,
+            address_type: ns2pro_proto::LeAddressType::Random,
         })
     }
     async fn connect(&self, _: &Discovered) -> Result<Fake, BleError> {
         Ok(Fake {
             data: self.link.data.clone(),
+            report: self.report,
             closed: CancellationToken::new(),
         })
     }
@@ -459,7 +465,14 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
         "--pair-host",
     ]);
     options.cache_file = cache.path();
-    let bluetooth = FakeBluetooth::default();
+    let bluetooth = FakeBluetooth {
+        report: ConnectionReport {
+            target: ConnectionTarget::Interval(6),
+            preference: PreferenceOutcome::Confirmed,
+            observed_interval: Some(6),
+        },
+        ..Default::default()
+    };
     let channels = Channels::default();
     let attempt_cache = ns2pro_bridge::cache::Cache(cache.path());
     let mut paired = false;
@@ -473,6 +486,7 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
                 tokio::task::yield_now().await;
             }
             assert!(cache.path().exists());
+            assert_eq!(channels.stats.lock().unwrap().connection, bluetooth.report);
             cancel.cancel();
         };
         let (result, ()) = tokio::join!(
@@ -489,6 +503,10 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
         assert!(result.result.is_err());
         assert!(result.paired);
         assert!(result.established);
+        assert_eq!(
+            channels.stats.lock().unwrap().connection,
+            ConnectionReport::default()
+        );
         paired = result.paired;
     }
     assert_eq!(

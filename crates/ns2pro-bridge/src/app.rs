@@ -76,18 +76,10 @@ pub async fn run(options: Options) -> Result<(), AppError> {
         }
         let channels = Channels::default();
         let cancel = CancellationToken::new();
-        let mut usb = platform::usb(&options).await?;
-        let result = run_session(
-            &bluetooth,
-            &options,
-            usb.run(&channels, &cancel),
-            cancel.clone(),
-            channels.clone(),
-        )
-        .await;
-        let detached = usb.close().await;
-        result?;
-        detached
+        platform::usb(&options)
+            .await?
+            .run_session(&bluetooth, &options, channels, cancel)
+            .await
     }
     .await;
     platform::close(&bluetooth).await;
@@ -116,7 +108,7 @@ mod platform {
         Listener(tokio::net::TcpListener),
         Attached {
             lease: Attached,
-            stream: Option<Either<tokio::net::UnixStream, tokio::net::TcpStream>>,
+            stream: Either<tokio::net::UnixStream, tokio::net::TcpStream>,
         },
     }
     pub async fn usb(options: &Options) -> Result<Usb, AppError> {
@@ -131,43 +123,59 @@ mod platform {
             tracing::info!(port = attached.port(), "virtual USB controller attached");
             Ok(Usb::Attached {
                 lease: attached,
-                stream: Some(stream),
+                stream,
             })
         }
     }
     impl Usb {
-        pub async fn run(
-            &mut self,
-            channels: &Channels,
-            cancel: &CancellationToken,
+        pub async fn run_session(
+            self,
+            bluetooth: &LinuxBluetooth,
+            options: &Options,
+            channels: Channels,
+            cancel: CancellationToken,
         ) -> Result<(), AppError> {
             match self {
-                Self::Listener(listener) => serve(listener, channels.clone(), cancel.clone())
-                    .await
-                    .map_err(AppError::Usb),
-                Self::Attached { stream, .. } => {
-                    match serve_urbs(
-                        stream.take().expect("USB transport runs once"),
-                        channels.clone(),
+                Self::Listener(listener) => {
+                    let transport = async {
+                        serve(&listener, channels.clone(), cancel.clone())
+                            .await
+                            .map_err(AppError::Usb)
+                    };
+                    run_session(
+                        bluetooth,
+                        options,
+                        transport,
                         cancel.clone(),
+                        channels.clone(),
                     )
                     .await
-                    {
-                        Ok(()) if cancel.is_cancelled() => Ok(()),
-                        Ok(()) => Err(AppError::Usb(std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            "kernel removed virtual controller",
-                        ))),
-                        Err(error) => Err(AppError::Usb(error)),
-                    }
+                }
+                Self::Attached { mut lease, stream } => {
+                    let transport = async {
+                        match serve_urbs(stream, channels.clone(), cancel.clone()).await {
+                            Ok(()) if cancel.is_cancelled() => Ok(()),
+                            Ok(()) => Err(AppError::Usb(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "kernel removed virtual controller",
+                            ))),
+                            Err(error) => Err(AppError::Usb(error)),
+                        }
+                    };
+                    let result = run_session(
+                        bluetooth,
+                        options,
+                        transport,
+                        cancel.clone(),
+                        channels.clone(),
+                    )
+                    .await;
+                    let detached = lease.detach();
+                    result?;
+                    detached?;
+                    Ok(())
                 }
             }
-        }
-        pub async fn close(&mut self) -> Result<(), AppError> {
-            if let Self::Attached { lease, .. } = self {
-                lease.detach()?;
-            }
-            Ok(())
         }
     }
 }
@@ -202,10 +210,23 @@ mod platform {
         })
     }
     impl Usb {
-        pub async fn close(&mut self) -> Result<(), AppError> {
-            Ok(())
+        pub async fn run_session(
+            mut self,
+            bluetooth: &WindowsBluetooth,
+            options: &Options,
+            channels: Channels,
+            cancel: CancellationToken,
+        ) -> Result<(), AppError> {
+            run_session(
+                bluetooth,
+                options,
+                self.run(&channels, &cancel),
+                cancel.clone(),
+                channels.clone(),
+            )
+            .await
         }
-        pub async fn run(
+        async fn run(
             &mut self,
             channels: &Channels,
             cancel: &CancellationToken,

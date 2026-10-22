@@ -1,9 +1,9 @@
 //! One standard LE update per live connection, without saved-preference writes.
 //! Handle validation is a snapshot, not an atomic kernel ownership guarantee.
 use super::socket::Socket;
-use crate::ble::Discovered;
+use crate::ble::{ConnectionReport, ConnectionTarget, Discovered, PreferenceOutcome};
 use ns2pro_proto::{
-    Address,
+    Address, LeAddressType,
     hci::{ConnectionParameters, Event, Parameters, parse},
 };
 
@@ -39,7 +39,7 @@ enum Step {
 struct Connection {
     handle: u16,
     peer: Address,
-    kind: u8,
+    kind: LeAddressType,
     state: State,
 }
 impl Connection {
@@ -57,8 +57,7 @@ impl Connection {
                 self.state = match self.state {
                     State::Unseen
                         if role == 0
-                            && address_type <= 3
-                            && address_type % 2 == self.kind
+                            && LeAddressType::from_hci_peer(address_type) == Some(self.kind)
                             && address == self.peer.to_le_bytes() =>
                     {
                         State::Live(Some(parameters))
@@ -137,10 +136,24 @@ impl Observer {
         }
     }
 
-    pub(super) async fn request(self, socket: &Socket, local: Address, target: &Discovered) {
-        if let Err(error) = request(&self.0, target.address, target.address_type, || {
-            socket.att_handle(local, target.address, target.address_type)
-        })
+    pub(super) async fn request(
+        self,
+        socket: &Socket,
+        local: Address,
+        target: &Discovered,
+    ) -> ConnectionReport {
+        let mut report = ConnectionReport {
+            target: ConnectionTarget::Interval(LOW_LATENCY.min),
+            preference: PreferenceOutcome::Unconfirmed,
+            observed_interval: None,
+        };
+        if let Err(error) = request(
+            &self.0,
+            target.address,
+            target.address_type,
+            &mut report,
+            || socket.att_handle(local, target.address, target.address_type),
+        )
         .await
         {
             tracing::warn!(
@@ -149,18 +162,37 @@ impl Observer {
                 "LE interval optimization unconfirmed; continuing with negotiated parameters"
             );
         }
+        report
     }
+}
+
+pub(super) fn unavailable() -> ConnectionReport {
+    ConnectionReport {
+        target: ConnectionTarget::Interval(LOW_LATENCY.min),
+        preference: PreferenceOutcome::Unavailable,
+        observed_interval: None,
+    }
+}
+
+fn observed(report: &mut ConnectionReport, parameters: Parameters) {
+    report.observed_interval = Some(parameters.interval);
+    report.preference = if parameters.interval == LOW_LATENCY.min {
+        PreferenceOutcome::Confirmed
+    } else {
+        PreferenceOutcome::Unconfirmed
+    };
 }
 
 async fn request(
     events: &Socket,
     peer: Address,
-    address_type: u8,
+    address_type: LeAddressType,
+    report: &mut ConnectionReport,
     live_handle: impl Fn() -> io::Result<u16>,
 ) -> io::Result<()> {
     timeout(
         Duration::from_secs(2),
-        request_inner(events, peer, address_type, live_handle),
+        request_inner(events, peer, address_type, report, live_handle),
     )
     .await
     .map_err(|_| {
@@ -173,30 +205,35 @@ async fn request(
 async fn request_inner(
     events: &Socket,
     peer: Address,
-    address_type: u8,
+    address_type: LeAddressType,
+    report: &mut ConnectionReport,
     live_handle: impl Fn() -> io::Result<u16>,
 ) -> io::Result<()> {
-    if ![1, 2].contains(&address_type) {
-        return Err(io::Error::other("invalid LE peer address type"));
-    }
     let mut connection = Connection {
         handle: live_handle()?,
         peer,
-        kind: address_type - 1,
+        kind: address_type,
         state: State::Unseen,
     };
     let mut p = [0; 260];
     // The observer was installed before ATT connect. Drain that connection event
     // and any already queued disconnect/reuse before the final fd snapshot.
     connection.drain(events, &mut p)?;
-    connection.valid(live_handle()?)?;
+    if let Err(error) = live_handle().and_then(|handle| connection.valid(handle)) {
+        report.observed_interval = None;
+        return Err(error);
+    }
     if let State::Live(Some(parameters)) = connection.state {
+        report.observed_interval = Some(parameters.interval);
         log_parameters(parameters, "connection complete (before request)");
     }
     let command = LOW_LATENCY.encode_update(connection.handle);
     // No generic UAPI pins this handle between the fd check and HCI execution.
     // Submit once, never retry/restore a potentially stale handle.
-    connection.valid(live_handle()?)?;
+    if let Err(error) = live_handle().and_then(|handle| connection.valid(handle)) {
+        report.observed_interval = None;
+        return Err(error);
+    }
     events.try_send(&command)?;
     tracing::info!(
         requested_interval_ms = LOW_LATENCY.interval_ms(),
@@ -210,12 +247,17 @@ async fn request_inner(
         }
         let step = connection.observe(&p[..n])?;
         if let Step::Refused(status) = step {
+            report.preference = PreferenceOutcome::Refused;
             return Err(io::Error::other(format!(
                 "observed HCI 0x2013 status: 0x{status:02x}"
             )));
         }
-        connection.valid(live_handle()?)?;
+        if let Err(error) = live_handle().and_then(|handle| connection.valid(handle)) {
+            report.observed_interval = None;
+            return Err(error);
+        }
         if let Step::Updated(parameters) = step {
+            observed(report, parameters);
             log_parameters(parameters, "LE connection update complete");
             if parameters.interval != LOW_LATENCY.min {
                 tracing::warn!(
@@ -250,8 +292,24 @@ mod tests {
         "78:81:8C:E8:54:3F".parse().unwrap()
     }
 
+    #[test]
+    fn unavailable_observer_has_target_but_no_observation() {
+        assert_eq!(
+            unavailable(),
+            ConnectionReport {
+                target: ConnectionTarget::Interval(6),
+                preference: PreferenceOutcome::Unavailable,
+                observed_interval: None,
+            }
+        );
+    }
+
     #[tokio::test]
     async fn live_connection_requests_standard_interval_and_waits_for_actual_update() {
+        let mut report = ConnectionReport {
+            preference: PreferenceOutcome::Unconfirmed,
+            ..Default::default()
+        };
         let (events, controller) = super::super::socket::pair();
         controller.send(&connected(peer(), 0, 0)).await.unwrap();
         let fake_controller = async {
@@ -267,11 +325,18 @@ mod tests {
             controller.send(&updated(0x201, 6)).await.unwrap();
         };
         let (result, ()) = timeout(Duration::from_secs(1), async {
-            tokio::join!(request(&events, peer(), 1, || Ok(0x201)), fake_controller)
+            tokio::join!(
+                request(&events, peer(), LeAddressType::Public, &mut report, || Ok(
+                    0x201
+                )),
+                fake_controller
+            )
         })
         .await
         .unwrap();
         result.expect("must request 7.5ms on the verified live connection");
+        assert_eq!(report.observed_interval, Some(6));
+        assert_eq!(report.preference, PreferenceOutcome::Confirmed);
     }
     #[tokio::test]
     async fn stale_wrong_peer_role_type_or_handle_never_submits_a_command() {
@@ -291,6 +356,10 @@ mod tests {
             ("getsockopt permission error", None, false, None),
         ];
         for (case, mutation, reuse, live) in cases {
+            let mut report = ConnectionReport {
+                preference: PreferenceOutcome::Unconfirmed,
+                ..Default::default()
+            };
             let (events, controller) = super::super::socket::pair();
             let mut event = connected(peer(), 0, 0);
             if let Some((offset, value)) = mutation {
@@ -302,7 +371,7 @@ mod tests {
                 controller.send(&connected(peer(), 0, 0)).await.unwrap();
             }
             let calls = std::cell::Cell::new(0);
-            let result = request(&events, peer(), 1, || {
+            let result = request(&events, peer(), LeAddressType::Public, &mut report, || {
                 let count = calls.get();
                 calls.set(count + 1);
                 let live = live.ok_or_else(|| io::Error::from_raw_os_error(libc::EPERM))?;
@@ -327,6 +396,10 @@ mod tests {
             connected(peer(), 0, 0),
             vec![4, 0x3e, 10, 3],
         ] {
+            let mut report = ConnectionReport {
+                preference: PreferenceOutcome::Unconfirmed,
+                ..Default::default()
+            };
             let (events, controller) = super::super::socket::pair();
             let (att, att_peer) = super::super::socket::pair();
             controller.send(&connected(peer(), 0, 0)).await.unwrap();
@@ -335,8 +408,21 @@ mod tests {
                 assert_eq!(controller.recv(&mut p).await.unwrap(), 18);
                 controller.send(&response).await.unwrap();
             };
-            let (result, ()) = tokio::join!(request(&events, peer(), 1, || Ok(0x201)), fake);
+            let (result, ()) = tokio::join!(
+                request(&events, peer(), LeAddressType::Public, &mut report, || Ok(
+                    0x201
+                )),
+                fake
+            );
             assert!(result.is_err(), "response {response:02x?}");
+            assert_eq!(
+                report.preference,
+                if response[1] == 0x0f {
+                    PreferenceOutcome::Refused
+                } else {
+                    PreferenceOutcome::Unconfirmed
+                }
+            );
             // The optional request never owns, shuts down or consumes the ATT fd.
             att.send(&[2, 247, 0]).await.unwrap();
             let mut p = [0; 3];
@@ -347,6 +433,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn status_success_without_matching_update_times_out_without_retry() {
+        let mut report = ConnectionReport {
+            preference: PreferenceOutcome::Unconfirmed,
+            ..Default::default()
+        };
         let (events, controller) = super::super::socket::pair();
         controller.send(&connected(peer(), 0, 0)).await.unwrap();
         let fake = async {
@@ -359,8 +449,15 @@ mod tests {
             controller.send(&updated(0x202, 6)).await.unwrap();
             tokio::time::sleep(Duration::from_secs(3)).await;
         };
-        let (result, ()) = tokio::join!(request(&events, peer(), 1, || Ok(0x201)), fake);
+        let (result, ()) = tokio::join!(
+            request(&events, peer(), LeAddressType::Public, &mut report, || Ok(
+                0x201
+            )),
+            fake
+        );
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(report.observed_interval, Some(39));
+        assert_eq!(report.preference, PreferenceOutcome::Unconfirmed);
         assert_eq!(
             controller.try_recv(&mut [0; 32]).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
@@ -377,7 +474,7 @@ mod tests {
             let mut state = Connection {
                 handle: 0x201,
                 peer: peer(),
-                kind: address_type % 2,
+                kind: LeAddressType::from_hci_peer(address_type).unwrap(),
                 state: State::Unseen,
             };
             state.observe(&enhanced).unwrap();
@@ -407,6 +504,10 @@ mod tests {
     async fn reconnect_creates_fresh_observation_and_accepts_other_negotiated_interval() {
         // No cached handle/rollback survives into the next invocation.
         for handle in [0x201u16, 0x245] {
+            let mut report = ConnectionReport {
+                preference: PreferenceOutcome::Unconfirmed,
+                ..Default::default()
+            };
             let (events, controller) = super::super::socket::pair();
             let mut event = connected(peer(), 1, 0);
             event[5..7].copy_from_slice(&handle.to_le_bytes());
@@ -417,8 +518,15 @@ mod tests {
                 assert_eq!(&p[..18], &LOW_LATENCY.encode_update(handle));
                 controller.send(&updated(handle, 12)).await.unwrap();
             };
-            let (result, ()) = tokio::join!(request(&events, peer(), 2, || Ok(handle)), fake);
+            let (result, ()) = tokio::join!(
+                request(&events, peer(), LeAddressType::Random, &mut report, || Ok(
+                    handle
+                )),
+                fake
+            );
             result.unwrap(); // observed 15ms, never falsely labelled 7.5ms
+            assert_eq!(report.observed_interval, Some(12));
+            assert_eq!(report.preference, PreferenceOutcome::Unconfirmed);
         }
     }
 }

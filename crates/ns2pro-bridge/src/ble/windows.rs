@@ -1,6 +1,9 @@
 //! Native WinRT transport. Controller/session protocol lives in shared services.
-use super::{BleError, Bluetooth, Discovered, GattLink, LinkError, NotificationSink};
-use ns2pro_proto::{Address, advertisement, gatt::Characteristic};
+use super::{
+    BleError, Bluetooth, ConnectionReport, ConnectionTarget, Discovered, GattLink, LinkError,
+    NotificationSink, PreferenceOutcome,
+};
+use ns2pro_proto::{Address, LeAddressType, advertisement, gatt::Characteristic};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -18,6 +21,7 @@ use windows::{
         BluetoothAdapter, BluetoothAddressType, BluetoothCacheMode, BluetoothConnectionStatus,
         BluetoothLEDevice, BluetoothLEPreferredConnectionParameters,
         BluetoothLEPreferredConnectionParametersRequest,
+        BluetoothLEPreferredConnectionParametersRequestStatus as PreferenceStatus,
         GenericAttributeProfile::{
             GattCharacteristic, GattClientCharacteristicConfigurationDescriptorValue,
             GattCommunicationStatus, GattDeviceService, GattValueChangedEventArgs, GattWriteOption,
@@ -222,8 +226,8 @@ impl Bluetooth for WindowsBluetooth {
                             .is_some()
                             {
                                 let address_type = match args.BluetoothAddressType()? {
-                                    BluetoothAddressType::Public => 1,
-                                    BluetoothAddressType::Random => 2,
+                                    BluetoothAddressType::Public => LeAddressType::Public,
+                                    BluetoothAddressType::Random => LeAddressType::Random,
                                     _ => continue,
                                 };
                                 let _ = tx.try_send(Ok(Discovered {
@@ -265,13 +269,8 @@ impl Bluetooth for WindowsBluetooth {
     }
     async fn connect(&self, target: &Discovered) -> Result<Self::Link, BleError> {
         let address_type = match target.address_type {
-            1 => BluetoothAddressType::Public,
-            2 => BluetoothAddressType::Random,
-            other => {
-                return Err(BleError::Platform(format!(
-                    "Unsupported Bluetooth address type {other}"
-                )));
-            }
+            LeAddressType::Public => BluetoothAddressType::Public,
+            LeAddressType::Random => BluetoothAddressType::Random,
         };
         let device = winrt!(
             BluetoothLEDevice::FromBluetoothAddressWithBluetoothAddressTypeAsync(
@@ -351,6 +350,11 @@ impl Bluetooth for WindowsBluetooth {
                 "BLE disconnected during discovery".into(),
             ));
         }
+        let mut report = ConnectionReport {
+            target: ConnectionTarget::ThroughputOptimized,
+            preference: PreferenceOutcome::Unavailable,
+            observed_interval: None,
+        };
         match BluetoothLEPreferredConnectionParameters::ThroughputOptimized().and_then(
             |parameters| {
                 resources
@@ -360,6 +364,12 @@ impl Bluetooth for WindowsBluetooth {
         ) {
             Ok(request) => {
                 tracing::info!(status = ?request.Status(), "Requested ThroughputOptimized BLE preference; no fixed interval guarantee");
+                report.preference = match request.Status() {
+                    Ok(PreferenceStatus::Success) => PreferenceOutcome::Confirmed,
+                    Ok(PreferenceStatus::DeviceNotAvailable) => PreferenceOutcome::Unavailable,
+                    Ok(PreferenceStatus::AccessDenied) => PreferenceOutcome::Refused,
+                    _ => PreferenceOutcome::Unconfirmed,
+                };
                 resources.preference = Some(request);
             }
             Err(error) => {
@@ -371,14 +381,18 @@ impl Bluetooth for WindowsBluetooth {
             .GetConnectionParameters()
             .and_then(|p| p.ConnectionInterval())
         {
-            Ok(interval) => tracing::info!(
-                interval_units_1_25_ms = interval,
-                "Observed BLE connection interval"
-            ),
+            Ok(interval) => {
+                report.observed_interval = Some(interval);
+                tracing::info!(
+                    interval_units_1_25_ms = interval,
+                    "Observed BLE connection interval"
+                );
+            }
             Err(error) => tracing::info!(%error, "Observed BLE connection interval: unknown"),
         }
         resources.characteristics = discovered;
         Ok(WindowsGattLink {
+            report,
             resources: RefCell::new(Some(resources)),
             closed,
         })
@@ -429,6 +443,7 @@ impl Drop for Resources {
     }
 }
 pub struct WindowsGattLink {
+    report: ConnectionReport,
     resources: RefCell<Option<Resources>>,
     closed: CancellationToken,
 }
@@ -457,6 +472,9 @@ impl WindowsGattLink {
     }
 }
 impl GattLink for WindowsGattLink {
+    fn connection_report(&self) -> ConnectionReport {
+        self.report
+    }
     async fn write(&self, kind: Characteristic, bytes: &[u8]) -> Result<(), LinkError> {
         let characteristic = self.characteristic(kind)?;
         let writer = DataWriter::new().map_err(link)?;
