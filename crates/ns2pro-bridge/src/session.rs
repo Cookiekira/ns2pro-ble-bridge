@@ -65,11 +65,7 @@ pub async fn attempt<B: Bluetooth>(
                 tracing::info!(address=%target.address, "host pairing completed");
             }
             cache.save(target.address)?;
-            channels
-                .stats
-                .lock()
-                .unwrap()
-                .connected(connection.report());
+            connection.established();
             established = true;
             tracing::info!(address=%target.address, "controller initialized; receiving input");
             controller.run(channels, cancel).await?;

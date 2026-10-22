@@ -1,6 +1,6 @@
 //! One controller session, command serialization, initialization and output routing.
 use crate::{
-    ble::{ConnectionReport, GattLink, LinkError},
+    ble::{GattLink, LinkError},
     channels::{Channels, Identity},
 };
 use ns2pro_proto::{
@@ -42,8 +42,9 @@ impl<'a, L: GattLink> Connection<'a, L> {
         controller.initialize(self.channels, flags).await?;
         Ok(controller)
     }
-    pub fn report(&self) -> ConnectionReport {
-        self.link.connection_report()
+    pub fn established(&self) {
+        let report = self.link.connection_report();
+        self.channels.stats.lock().unwrap().connected(report);
     }
     pub async fn disconnect(self) {
         self.channels.stats.lock().unwrap().disconnected();
