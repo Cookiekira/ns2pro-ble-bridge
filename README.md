@@ -137,7 +137,10 @@ validation and queued command execution remains possible despite these checks.
 Other channels on the same peer share this ACL and its interval; other managers
 may subsequently change it. There is one attempt per connection, no retry fight,
 no stale rollback, and no monitoring claim after startup. Actual hardware acceptance
-of 7.5 ms remains pending. Windows requests ThroughputOptimized best-effort.
+of 7.5 ms is confirmed on the tested Linux adapter by the startup LE update
+event and user confirmation that noticeable Steam input delay disappeared.
+Reconnect stability and rejection on real hardware remain pending. Windows
+requests ThroughputOptimized best-effort.
 
 Tests compare all exported USB fixture scenarios and supported descriptors, with
 explicit STALL/pending bulk/UNLINK differences. Fake GATT plus an in-memory USB/IP

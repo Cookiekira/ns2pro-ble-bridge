@@ -225,3 +225,27 @@ showing `observed_interval_ms=7.5` before claiming the radio delay is improved.
 Previous 48.75 ms capture remains the baseline, not evidence for this change.
 No kernel virtual-HCI handle-reuse test was run; the queue race documented above
 is an unresolved UAPI limitation and is not certified away by fake tests.
+
+
+## 2026-10-22 user-operated 7.5 ms hardware result
+
+After building commit `eb73be3`, the user ran the absolute integration release
+with sudo and `/tmp/ns2pro-hardware-cache.json`. Their supplied terminal screenshot
+identifies hci0 on the previously recorded MediaTek adapter and shows:
+
+- 09:34:08.516701 UTC: initial LE connection interval 48.75 ms, latency 0,
+  supervision timeout 420 ms, before the request.
+- 09:34:08.516719 UTC: standard 7.5 ms request submitted for handle 513.
+- 09:34:08.863205 UTC: successful LE connection update observed at 7.5 ms,
+  latency 0, supervision timeout 2000 ms.
+- 09:34:09.547215 UTC: controller initialized and receiving input.
+
+The user then explicitly confirmed that the previously noticeable Steam input
+delay disappeared. This establishes the requested interval on this hardware for
+this session and the user's perceived improvement. It does not measure complete
+button-to-display latency. No new report-rate measurement or independently saved
+packet capture was supplied. The earlier 48.75 ms capture remains baseline only.
+Reconnect stability, real rejection fallback, other adapters, per-feature output,
+Windows hardware and 5 ms support remain separate acceptance items. The documented
+numeric-handle queue race remains unchanged. Earlier pending statements above
+record the pre-test state and are superseded by this result for this session.
