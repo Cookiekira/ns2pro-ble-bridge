@@ -8,18 +8,20 @@ unchecked unless individually evidenced; see [integration evidence](rust-integra
 
 ## Prerequisites
 
-- [ ] Root for auto-attach, or CAP_NET_ADMIN for `--no-auto-attach` Bluetooth; add CAP_NET_RAW for the live interval request.
-- [ ] A usable LE adapter; `vhci-hcd` loaded for local auto-attach.
+- [x] Root-operated auto-attach/live interval run on the tested setup: [recorded user-operated result](rust-linux-implementation.md#2026-10-22-user-operated-75-ms-hardware-result) says the user ran the integration release “with sudo”. Non-root capability setup is not verified.
+- [x] Usable LE adapter and local vhci attachment on the tested setup: [integration evidence](rust-integration-validation.md#remaining-acceptance-and-limitations) records “Later privileged user runs successfully attached and enumerated the virtual device”; the live result identifies hci0 on the recorded MediaTek adapter.
 - [ ] No other active controller session. Bluetoothd is optional, not a dependency.
 
 ## Native and USB path
 
 - [ ] Hidden `--bt-smoke-test` enumerates adapters and scans for 500 ms.
 - [ ] Discovery identifies Nintendo advertisements and correct LE address type.
-- [ ] Pairing initializes a controller; subsequent cached attempts require a fresh advertisement.
+- [x] Controller initialization succeeds on the tested setup: [recorded user-operated result](rust-linux-implementation.md#2026-10-22-user-operated-75-ms-hardware-result) records “controller initialized and receiving input”.
+- [ ] Verify first pairing and fresh advertisements for subsequent cached attempts on hardware.
 - [ ] AF_UNIX socketpair attaches through vhci sysfs; record exact kernel result.
 - [ ] If rejected, connected local TCP-fd fallback attaches; no usbip executable invoked.
-- [ ] Full Speed `057e:2069` enumerates, both HID/bulk interfaces work, SDL/game initializes.
+- [x] Virtual `057e:2069` enumerates and physical Steam input works: [first hardware run](rust-integration-validation.md#first-hardware-run-and-connect-readiness-regression) records recognition as `057e:2069` and subsequent user confirmation of physical input, including regular Steam with SteamRT3 disabled.
+- [ ] Verify Full Speed and both HID/bulk interfaces individually; recheck SDL flash-read warnings with the fixed build.
 - [ ] Check all buttons, both calibrated stick ranges and battery/charging values individually.
 - [x] User confirms gyroscope/motion control works in the requested game or Steam configuration on the tested Linux setup. Sensor timestamp semantics and quantitative accuracy remain unverified.
 - [x] User confirms Steam controller-test Rumble works on the tested Linux setup.

@@ -47,18 +47,14 @@ for this exact code is in the platform record:
 Real SDL flash-read warnings must be rechecked after restarting into this build;
 no real-hardware disappearance of those warnings is claimed yet.
 
-The remaining 7.5 ms request is not implemented. Read-only kernel research found
-standard HCI LE Connection Update (`0x2013`) as a non-persistent, per-live-ACL
-alternative to LOAD_CONN_PARAM. It can avoid saved preference mutation, but the
-current UAPI takes a numeric HCI handle, not a socket or connection generation.
-Live ATT L2CAP_CONNINFO plus identity/epoch checks permit a best-effort path;
-they cannot atomically prevent a disconnect-and-handle-reuse race, and other
-channels on the same ACL share its interval. Raw submission needs CAP_NET_RAW.
-No such command was sent and no extra capabilities installed. Do not call the
-candidate a strict ownership-safe implementation or mark #18 complete. See the
-[Linux L2CAP socket interface](https://github.com/torvalds/linux/blob/7be4bc52fd9e0e55dc9a2e0232b89427d2c4b614/net/bluetooth/l2cap_sock.c),
-[standard update construction](https://github.com/torvalds/linux/blob/7be4bc52fd9e0e55dc9a2e0232b89427d2c4b614/net/bluetooth/hci_sync.c),
-and [completion handling](https://github.com/torvalds/linux/blob/7be4bc52fd9e0e55dc9a2e0232b89427d2c4b614/net/bluetooth/hci_event.c).
+PR #22 subsequently implemented the best-effort standard HCI LE Connection
+Update (`0x2013`). The user confirmed 7.5 ms negotiation, disappearance of noticeable
+Steam input delay and continued 7.5 ms after power-off/reconnect. See
+[Live connection interval request](rust-linux-implementation.md#live-connection-interval-request)
+for implementation and the numeric-handle queue race, and
+[User-operated 7.5 ms hardware result](rust-linux-implementation.md#2026-10-22-user-operated-75-ms-hardware-result)
+for the scoped hardware evidence. No independent 7.5 ms packet capture is archived;
+5 ms and complete end-to-end latency remain unverified.
 
 ## Original integrated delivery record
 
@@ -90,9 +86,10 @@ bridge build. Launching the fixed integration binary restored physical input,
 confirmed by the user with SteamRT3 disabled. This distinguishes the two independent
 failures: the legacy client dependency and the outdated ATT connection implementation.
 
-The Rust replacement is integrated locally on `feat/rust-rewrite`, beginning at
-seed `aba0ad7`. Authority remains GitHub issues #15–#20. This record does not mark
-hardware acceptance complete, close issues, publish artifacts or merge main.
+The original local integration on `feat/rust-rewrite` began at seed `aba0ad7`.
+PR #21 delivered the rewrite and PR #22 the live interval follow-up to main,
+through merge commit `62710a2`. Authority remains GitHub issues #15–#20; merging
+does not establish full hardware acceptance or release publication.
 The protected original checkout at `/home/oddc/Projects/ns2pro-ble-bridge` was used
 only for reading reference sources; no cleanup, reset, stash, commit or edits were
 performed there. The tracked VIIPER gitlink was removed only from the implementation
@@ -194,14 +191,21 @@ target in this synthetic reference environment. This is not hardware latency acc
 | --- | --- |
 | Original unprivileged Linux scan | hci0 enumerated (`EC:91:61:88:1C:C4`, USB `0e8d:0616` Wireless_Device); START_DISCOVERY rejected status `0x14` Permission Denied, exit 1; uid 1000, effective capabilities 0. No successful scan/controller connection claimed. |
 | vhci auto-attach / fallback | Later privileged user runs successfully attached and enumerated the virtual device. No AF_UNIX rejection/fallback warning was observed. The fallback and fatal host-loss paths still require separate hardware acceptance. |
-| Controller/USB hardware | User confirmed working physical input in SteamRT3 and regular 32-bit Steam after both fixes; cached controller and virtual USB enumeration are observed. Per-feature motion/power/rumble/LED/reconnect/coexistence checks and firmware versions were not individually recorded. Follow [checklist](linux-hardware-checklist.md). |
-| Standard 7.5 ms preference | **Unmet software/platform criterion.** Codec encodes 6/6, latency 0, timeout 200, but no production request is sent: examined mgmt LOAD_CONN_PARAM may clear other devices' disabled preferences and provides no read/compare/restore API. Backend logs optimization unavailable and connects using system-allowed parameters. An ownership-safe mechanism must be established before claiming #18 completion. Kernel evidence is in the Linux record. |
-| Verified 5 ms / actual interval | No verified 5 ms path. Captured Nintendo connection interval is 48.75 ms; report cadence approximately 20.56 Hz. No invalid interval 4/vendor command sent. True end-to-end game latency remains unmeasured. |
+| Controller/USB hardware | User confirmed working physical input in SteamRT3 and regular 32-bit Steam after both fixes; cached controller and virtual USB enumeration are observed. Later user confirmations cover functional motion, basic rumble, steady/restored player indicators and power-off/reconnect; see [user-operated result](rust-linux-implementation.md#2026-10-22-user-operated-75-ms-hardware-result). Battery/charging, detailed output timing, coexistence and firmware checks remain open. Follow [checklist](linux-hardware-checklist.md). |
+| Standard 7.5 ms preference | PR #22 implements a best-effort live HCI update without saved-preference writes; see [Live connection interval request](rust-linux-implementation.md#live-connection-interval-request). Startup observed 7.5 ms, latency 0, supervision 2000 ms; user confirmed delay disappeared and power-off/reconnect retained 7.5 ms. See [user-operated result](rust-linux-implementation.md#2026-10-22-user-operated-75-ms-hardware-result) and [checklist timing evidence](linux-hardware-checklist.md#timing-and-architecture). No independent packet capture archived; numeric-handle queue race, real rejection fallback and long-duration stability remain open. |
+| Verified 5 ms / actual interval | No verified 5 ms path; no generic interval 4/vendor command sent. The earlier 48.75 ms / approximately 20.56 Hz session is the baseline; the later startup LE update confirms 7.5 ms on the tested adapter. True end-to-end game latency remains unmeasured. |
 | Motion timestamp semantics | Controller timestamp offset not verified; implementation retains monotonic notification-receipt microseconds. Keepalive preserves that timestamp. |
 | Windows native CI / hardware | MSVC cross-build plus tests executed under Wine passed. Actual Windows hosted CI has not run locally; physical WinRT/usbip-win2 kernel-driver and timing acceptance not claimed. |
-| Linux arm64 | Native ARM release runner configured, but no ARM build/hardware acceptance performed in this x64 session. |
-| Publication | Rust-only workflows prepared; no workflow run, push, tag, release, main merge or issue closure performed. |
+| Linux arm64 | Native ARM CI build/strict clippy/tests and release runner configured; workflow execution and ARM hardware acceptance remain unverified in this x64 session. |
+| Publication | PR #21/#22 merged to main through `62710a2`, including the live request and [recorded user results](rust-linux-implementation.md#2026-10-22-user-operated-75-ms-hardware-result). Native ARM CI and manual release dry run are configured; no workflow execution or published release is established by this record. Issue acceptance remains separate. |
 
-#17, #18 and #20 must not be presented as fully accepted while the above hardware
-and Linux preference items remain open. The local implementation and all feasible
-automated validation are delivered; the parent specification was not modified.
+## Open acceptance by issue
+
+Merging PR #21/#22 does not establish full acceptance of #17–#20.
+
+| Issue | User-operated Linux hardware checks still open | Windows physical / arm64 hardware | Remaining software / delivery gaps |
+| --- | --- | --- | --- |
+| #17 native Linux | Complete the unchecked [native/USB checklist](linux-hardware-checklist.md#native-and-usb-path): detailed input/power, fallback, cleanup, fatal USB loss, cache/override, remote attach and bluetoothd coexistence. | Repeat applicable checks on Linux arm64; no arm64 hardware acceptance recorded. | No further software defect established by this record; hardware results may expose gaps. |
+| #18 timing | Archive a fresh 7.5 ms HCI capture; test real rejection fallback and long-duration stability; verify IMU timestamps and rumble throttle. 5 ms has no verified path. | Windows interval/latency and arm64 timing remain unverified. | Debug statistics observed-interval gap is **in progress on `rust/followups-code`**. Numeric-handle queue race remains a UAPI limitation; no verified 5 ms implementation. |
+| #19 native Windows | — | Physical WinRT BLE, usbip-win2 attach/enumeration, input/output, reconnect, cleanup and timing checks remain open; see [Windows record](windows-native-validation.md). | Native Windows CI execution still needs verification; cross-build/Wine evidence is recorded. |
+| #20 integration/release | Complete remaining end-to-end Linux checklist checks; partial x64 results are recorded above. | Windows physical and Linux arm64 hardware acceptance remain open. | Execute native CI, including arm64, and the manual three-platform release dry run; verify artifacts before a tag release. No Actions execution or release publication is claimed here. |
