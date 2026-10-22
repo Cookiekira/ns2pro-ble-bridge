@@ -215,10 +215,10 @@ async fn read_loop(shared: &Shared) {
             }
             Packet::Ignore => None,
         };
-        if let Some(reply) = reply {
-            if shared.send(&reply).await.is_err() {
-                return;
-            }
+        if let Some(reply) = reply
+            && shared.send(&reply).await.is_err()
+        {
+            return;
         }
     }
 }
@@ -236,7 +236,7 @@ mod tests {
             writer: AsyncMutex::new(()),
             closed: CancellationToken::new(),
         });
-        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
         let copy = seen.clone();
         shared
             .sinks

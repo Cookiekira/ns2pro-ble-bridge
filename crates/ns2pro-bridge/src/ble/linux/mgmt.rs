@@ -47,14 +47,12 @@ impl Management {
             loop {
                 let p = self.receive().await?;
                 let f = Frame::decode(&p).map_err(|e| BleError::Platform(e.to_string()))?;
-                if f.index == index {
-                    if let Some(c) =
+                if f.index == index
+                    && let Some(c) =
                         mgmt::completion(f).map_err(|e| BleError::Platform(e.to_string()))?
-                    {
-                        if c.command == opcode {
-                            return Ok((c.status, c.data.to_vec()));
-                        }
-                    }
+                    && c.command == opcode
+                {
+                    return Ok((c.status, c.data.to_vec()));
                 }
                 // Bound unrelated events while waiting for a command. Only current advertisements matter.
                 if self.events.len() == 128 {
@@ -128,13 +126,12 @@ impl Management {
                 if mgmt::controller_advertisement(found.eir).map_err(|e|BleError::Platform(e.to_string()))?.is_some(){return Ok(Some(Discovered{address:found.device.address,address_type:found.device.address_type}))}
             }
         })=>result.unwrap_or(Ok(None))};
-        if owned {
-            if let Err(e) = m
+        if owned
+            && let Err(e) = m
                 .checked(mgmt::STOP_DISCOVERY, index, &[mgmt::LE_DISCOVERY])
                 .await
-            {
-                tracing::warn!(%e,"could not stop owned LE discovery");
-            }
+        {
+            tracing::warn!(%e,"could not stop owned LE discovery");
         }
         result
     }
@@ -153,7 +150,7 @@ impl Management {
                 "invalid GET_CONNECTIONS response".into(),
             ));
         }
-        for entry in p[2..].chunks_exact(7) {
+        for entry in p[2..].as_chunks::<7>().0 {
             if mgmt::Device::decode(entry).map_err(|e| BleError::Platform(e.to_string()))? == device
             {
                 m.checked(mgmt::DISCONNECT, index, &device.encode()).await?;

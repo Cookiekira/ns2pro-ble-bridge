@@ -38,7 +38,8 @@ impl Socket {
         }
     }
     pub(super) fn from_owned(fd: OwnedFd) -> io::Result<Self> {
-        Ok(Self(AsyncFd::new(fd)?))
+        // SAFETY: OwnedFd keeps this descriptor open and stable until AsyncFd drops it.
+        Ok(Self(unsafe { AsyncFd::register(fd)? }))
     }
     pub(super) fn management() -> io::Result<Self> {
         let fd = Self::create(libc::SOCK_RAW, 1)?;
