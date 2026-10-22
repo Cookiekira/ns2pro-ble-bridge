@@ -20,7 +20,8 @@ unchecked unless individually evidenced; see [integration evidence](rust-integra
 - [ ] AF_UNIX socketpair attaches through vhci sysfs; record exact kernel result.
 - [ ] If rejected, connected local TCP-fd fallback attaches; no usbip executable invoked.
 - [ ] Full Speed `057e:2069` enumerates, both HID/bulk interfaces work, SDL/game initializes.
-- [ ] Buttons, both calibrated sticks, battery/charging and IMU reach host correctly.
+- [ ] Check all buttons, both calibrated stick ranges and battery/charging values individually.
+- [x] User confirms gyroscope/motion control works in the requested game or Steam configuration on the tested Linux setup. Sensor timestamp semantics and quantitative accuracy remain unverified.
 - [x] User confirms Steam controller-test Rumble works on the tested Linux setup.
 - [ ] Verify sustained/rapid rumble updates and latest-value 20 ms throttle on hardware.
 - [x] User confirms player indicators are steady after connection and restore after reconnect on the tested Linux setup. Arbitrary host-selected LED patterns were not separately checked.

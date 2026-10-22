@@ -266,3 +266,13 @@ were not separately exercised by this confirmation.
 The user subsequently confirmed player indicators remain steady after connection
 and restore after reconnect. This records the observed indicator behavior on the
 same Linux setup; arbitrary host-selected LED patterns were not separately tested.
+
+
+The user also confirmed gyroscope/motion control works in the requested game or
+Steam configuration. The specific application/configuration and quantitative
+sensor measurements were not supplied. This validates functional motion input
+on the tested setup, without establishing sensor timestamp semantics or accuracy.
+The user-operated checks now cover working input, negotiated 7.5 ms with perceived
+delay removed, power-off/reconnect, basic rumble, steady/restored player indicators
+and motion control. This is scoped Linux hardware evidence, not blanket completion
+of #18, other platforms, or all items in the hardware checklist.
