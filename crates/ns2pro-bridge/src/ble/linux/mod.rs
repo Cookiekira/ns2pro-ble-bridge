@@ -3,7 +3,7 @@ mod att_link;
 mod interval;
 mod mgmt;
 mod socket;
-use crate::ble::{BleError, Bluetooth, Discovered};
+use crate::ble::{BleError, Bluetooth, CONNECT_TIMEOUT, Discovered, SCAN_TIMEOUT};
 pub use att_link::AttLink;
 use mgmt::Management;
 use ns2pro_proto::Address;
@@ -56,7 +56,7 @@ impl LinuxBluetooth {
 impl Bluetooth for LinuxBluetooth {
     type Link = AttLink;
     async fn scan(&self, target: Option<Address>) -> Result<Discovered, BleError> {
-        self.discover(target, Duration::from_secs(30))
+        self.discover(target, SCAN_TIMEOUT)
             .await?
             .ok_or(BleError::Timeout)
     }
@@ -72,7 +72,7 @@ impl Bluetooth for LinuxBluetooth {
         let observer = interval::Observer::open(self.index);
         tracing::debug!(address=%target.address, "opening raw ATT connection");
         let socket = timeout(
-            Duration::from_secs(10),
+            CONNECT_TIMEOUT,
             socket::Socket::att(self.address, target.address, target.address_type),
         )
         .await

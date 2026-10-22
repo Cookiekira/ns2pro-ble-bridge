@@ -323,6 +323,33 @@ impl Drop for Attached {
     }
 }
 
+pub(super) struct Adapter {
+    pub listener: tokio::net::TcpListener,
+}
+impl super::attachment::LeaseAdapter for Adapter {
+    type Lease = Attached;
+    type Transport = ();
+
+    async fn attach(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<(Attached, Option<()>), AttachError> {
+        let attached = Attached::attach(self.listener.local_addr()?, cancel.clone()).await?;
+        Ok((attached, None))
+    }
+    async fn serve(
+        &self,
+        _: Option<()>,
+        channels: &crate::channels::Channels,
+        cancel: &CancellationToken,
+    ) -> std::io::Result<()> {
+        super::server::serve(&self.listener, channels.clone(), cancel.clone()).await
+    }
+    async fn detach(&self, lease: &mut Attached) -> Result<(), AttachError> {
+        lease.detach().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

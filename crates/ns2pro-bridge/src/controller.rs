@@ -27,6 +27,34 @@ pub enum ControllerError {
     #[error("random key generation: {0}")]
     Random(String),
 }
+/// Owns the link from acquisition through teardown, including failed initialization.
+pub(crate) struct Connection<'a, L: GattLink> {
+    link: L,
+    channels: &'a Channels,
+}
+impl<'a, L: GattLink> Connection<'a, L> {
+    pub fn new(link: L, channels: &'a Channels) -> Self {
+        channels.rumble.send_replace(None);
+        Self { link, channels }
+    }
+    pub async fn initialize(&self, flags: u8) -> Result<Controller<'_, L>, ControllerError> {
+        let mut controller = Controller::new(&self.link).await?;
+        controller.initialize(self.channels, flags).await?;
+        Ok(controller)
+    }
+    pub fn established(&self) {
+        let report = self.link.connection_report();
+        self.channels.stats.lock().unwrap().connected(report);
+    }
+    pub async fn disconnect(self) {
+        self.channels.stats.lock().unwrap().disconnected();
+        // Revoke callbacks before taking the watch lock for the final neutral sample.
+        // Input callbacks check this same token under that lock.
+        self.link.closed().cancel();
+        self.channels.neutral();
+        self.link.close().await;
+    }
+}
 pub struct Controller<'a, L: GattLink> {
     link: &'a L,
     responses: mpsc::Receiver<Vec<u8>>,
@@ -128,7 +156,7 @@ impl<'a, L: GattLink> Controller<'a, L> {
                         Ok(state) => {
                             channels.input.send_modify(|sample| {
                                 // Check under the watch lock so an in-flight WinRT callback cannot
-                                // publish stale held input after the supervisor's neutral reset.
+                                // publish stale held input after Connection::disconnect's neutral reset.
                                 if closed.is_cancelled() {
                                     return;
                                 }
@@ -181,7 +209,7 @@ impl<'a, L: GattLink> Controller<'a, L> {
                         &command::rumble_packet(&v.left, &v.right),
                     )
                     .await?;
-                    channels.stats.lock().unwrap().rumble_writes += 1;
+                    channels.stats.lock().unwrap().rumble_written();
                     next = tokio::time::Instant::now() + Duration::from_millis(20);
                 }
                 rumble.changed().await.map_err(|_| LinkError::Closed)?;

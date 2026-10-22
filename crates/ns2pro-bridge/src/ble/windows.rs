@@ -1,7 +1,7 @@
 //! Native WinRT transport. Controller/session protocol lives in shared services.
 use super::{
-    BleError, Bluetooth, ConnectionReport, ConnectionTarget, Discovered, GattLink, LinkError,
-    NotificationSink, PreferenceOutcome,
+    BleError, Bluetooth, CONNECT_TIMEOUT, ConnectionReport, ConnectionTarget, Discovered, GattLink,
+    LinkError, NotificationSink, PreferenceOutcome, SCAN_TIMEOUT,
 };
 use ns2pro_proto::{Address, LeAddressType, advertisement, gatt::Characteristic};
 use std::{
@@ -254,7 +254,7 @@ impl Bluetooth for WindowsBluetooth {
             )).map_err(ble)?,
         );
         scope.watcher.Start().map_err(ble)?;
-        tokio::time::timeout(Duration::from_secs(30), rx.recv())
+        tokio::time::timeout(SCAN_TIMEOUT, rx.recv())
             .await
             .map_err(|_| BleError::Timeout)?
             .ok_or_else(|| BleError::Platform("Bluetooth watcher ended".into()))?
@@ -305,7 +305,7 @@ impl Bluetooth for WindowsBluetooth {
                 ))
                 .map_err(ble)?,
         );
-        let discovered = tokio::time::timeout(Duration::from_secs(10), async {
+        let discovered = tokio::time::timeout(CONNECT_TIMEOUT, async {
             let services = winrt!(
                 resources
                     .device

@@ -1,10 +1,10 @@
 //! Portable selection, cache and reconnect lifecycle.
 use crate::{
-    ble::{BleError, Bluetooth, GattLink},
+    ble::{BleError, Bluetooth},
     cache::Cache,
     channels::Channels,
     cli::Options,
-    controller::{Controller, ControllerError},
+    controller::{Connection, ControllerError},
 };
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -35,12 +35,8 @@ pub async fn attempt<B: Bluetooth>(
     cancel: &CancellationToken,
 ) -> AttemptOutcome {
     let mut established = false;
-    let cached = cache.load().unwrap_or_else(|e| {
-        tracing::warn!(%e,"ignoring invalid cache");
-        None
-    });
-    let selected = options.device_address.or(cached);
-    let from_cache = options.device_address.is_none() && cached.is_some();
+    let selection = cache.select(options.device_address);
+    let selected = selection.address();
     let result = async {
         let acquire = async {
             let target = bluetooth.scan(selected).await?;
@@ -51,12 +47,9 @@ pub async fn attempt<B: Bluetooth>(
             _ = cancel.cancelled() => Err(SessionError::Cancelled),
             result = acquire => result,
         }?;
-        channels.rumble.send_replace(None);
+        let connection = Connection::new(link, channels);
         let setup = async {
-            let mut controller = Controller::new(&link).await?;
-            controller
-                .initialize(channels, options.feature_flags)
-                .await?;
+            let mut controller = connection.initialize(options.feature_flags).await?;
             if selected.is_none() || (options.pair_host && !paired) {
                 let host = match options.host_address {
                     Some(a) => a,
@@ -72,7 +65,7 @@ pub async fn attempt<B: Bluetooth>(
                 tracing::info!(address=%target.address, "host pairing completed");
             }
             cache.save(target.address)?;
-            channels.stats.lock().unwrap().connection = link.connection_report();
+            connection.established();
             established = true;
             tracing::info!(address=%target.address, "controller initialized; receiving input");
             controller.run(channels, cancel).await?;
@@ -82,27 +75,11 @@ pub async fn attempt<B: Bluetooth>(
             _ = cancel.cancelled() => Err(SessionError::Cancelled),
             result = setup => result,
         };
-        channels.stats.lock().unwrap().connection = Default::default();
-        link.closed().cancel();
-        channels.neutral();
-        link.close().await;
+        connection.disconnect().await;
         result
     }
     .await;
-    // An established session leaves a valid cache; failed cached attempts invalidate it.
-    let result = if from_cache
-        && !cancel.is_cancelled()
-        && !established
-        && result.as_ref().is_err_and(|error| {
-            !matches!(
-                error,
-                SessionError::Bluetooth(BleError::Cancelled) | SessionError::Cancelled
-            )
-        }) {
-        cache.forget().map_err(SessionError::from).and(result)
-    } else {
-        result
-    };
+    let result = selection.settle(established, cancel.is_cancelled(), result);
     AttemptOutcome {
         paired,
         established,
@@ -115,7 +92,7 @@ pub async fn supervise<B: Bluetooth>(
     channels: &Channels,
     cancel: &CancellationToken,
 ) -> Result<(), SessionError> {
-    let cache = Cache(options.cache_file.clone());
+    let cache = Cache::new(options.cache_file.clone());
     if options.forget_device {
         cache.forget()?;
     }

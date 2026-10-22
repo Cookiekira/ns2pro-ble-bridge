@@ -1,3 +1,5 @@
+mod attachment;
+pub use attachment::{Attachment, Error};
 pub mod server;
 pub mod session;
 

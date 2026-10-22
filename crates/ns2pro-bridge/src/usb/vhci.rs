@@ -180,6 +180,34 @@ impl Drop for Attached {
         }
     }
 }
+pub(super) struct Adapter;
+impl super::attachment::LeaseAdapter for Adapter {
+    type Lease = Attached;
+    type Transport = Either<UnixStream, TcpStream>;
+
+    async fn attach(
+        &self,
+        _: &tokio_util::sync::CancellationToken,
+    ) -> Result<(Attached, Option<Self::Transport>), AttachError> {
+        let (attached, stream) = Attached::attach().await?;
+        tracing::info!(port = attached.port(), "virtual USB controller attached");
+        Ok((attached, Some(stream)))
+    }
+    async fn serve(
+        &self,
+        transport: Option<Self::Transport>,
+        channels: &crate::channels::Channels,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> io::Result<()> {
+        let Some(stream) = transport else {
+            return std::future::pending().await;
+        };
+        super::attachment::attached_transport(stream, channels, cancel).await
+    }
+    async fn detach(&self, lease: &mut Attached) -> Result<(), AttachError> {
+        lease.detach()
+    }
+}
 fn write_attach(root: &Path, port: u32, fd: i32) -> io::Result<()> {
     fs::write(root.join("attach"), format!("{port} {fd} {DEVICE_ID} 2"))
 }

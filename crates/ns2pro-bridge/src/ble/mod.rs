@@ -1,6 +1,10 @@
 //! Native Bluetooth boundary. Futures deliberately need not be Send.
 use ns2pro_proto::{Address, LeAddressType, gatt::Characteristic};
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+
+const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Connection-time evidence, independent of notification receipt timing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
