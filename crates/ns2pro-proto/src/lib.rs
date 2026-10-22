@@ -11,6 +11,7 @@ pub mod att;
 pub mod calibration;
 pub mod command;
 pub mod gatt;
+pub mod hci;
 pub mod input;
 pub mod mgmt;
 pub mod pairing;

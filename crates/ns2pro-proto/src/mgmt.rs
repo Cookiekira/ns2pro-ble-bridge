@@ -17,7 +17,6 @@ pub const DISCONNECT: u16 = 0x14;
 pub const GET_CONNECTIONS: u16 = 0x15;
 pub const START_DISCOVERY: u16 = 0x23;
 pub const STOP_DISCOVERY: u16 = 0x24;
-pub const LOAD_CONN_PARAM: u16 = 0x35;
 pub const DEVICE_FOUND: u16 = 0x12;
 pub const LE_DISCOVERY: u8 = 6;
 pub const BUSY: u8 = 10;
@@ -180,33 +179,6 @@ pub fn controller_advertisement(mut eir: &[u8]) -> Result<Option<AdvertisementMo
     }
     Ok(result)
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConnectionParameters {
-    pub min: u16,
-    pub max: u16,
-    pub latency: u16,
-    pub timeout: u16,
-}
-impl ConnectionParameters {
-    pub const LOW_LATENCY: Self = Self {
-        min: 6,
-        max: 6,
-        latency: 0,
-        timeout: 200,
-    };
-    pub fn load(self, device: Device) -> [u8; 17] {
-        let mut p = [0; 17];
-        p[0] = 1;
-        p[2..9].copy_from_slice(&device.encode());
-        for (i, v) in [self.min, self.max, self.latency, self.timeout]
-            .into_iter()
-            .enumerate()
-        {
-            p[9 + i * 2..11 + i * 2].copy_from_slice(&v.to_le_bytes())
-        }
-        p
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,16 +200,12 @@ mod tests {
         assert!(Frame::decode(&[1, 0, 0, 0, 0, 0, 1]).is_err());
     }
     #[test]
-    fn standard_interval_and_address_order() {
+    fn device_address_order() {
         let d = Device {
             address: "01:02:03:04:05:06".parse().unwrap(),
             address_type: 2,
         };
         assert_eq!(Device::decode(&d.encode()).unwrap(), d);
-        assert_eq!(
-            ConnectionParameters::LOW_LATENCY.load(d),
-            [1, 0, 6, 5, 4, 3, 2, 1, 2, 6, 0, 6, 0, 0, 0, 200, 0]
-        );
     }
     #[test]
     fn only_fresh_valid_manufacturer_identity() {

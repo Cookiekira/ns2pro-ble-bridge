@@ -1,117 +1,27 @@
 //! One standard LE update per live connection, without saved-preference writes.
 //! Handle validation is a snapshot, not an atomic kernel ownership guarantee.
 use super::socket::Socket;
-use ns2pro_proto::Address;
+use ns2pro_proto::{
+    Address,
+    hci::{ConnectionParameters, Event, Parameters, parse},
+};
+
 use std::io;
 use tokio::time::{Duration, timeout};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Parameters {
-    interval: u16,
-    latency: u16,
-    supervision: u16,
-}
-impl Parameters {
-    fn parse(p: &[u8]) -> io::Result<Self> {
-        let result = Self {
-            interval: word(p, 0),
-            latency: word(p, 2),
-            supervision: word(p, 4),
-        };
-        if !(6..=3200).contains(&result.interval)
-            || result.latency > 499
-            || !(10..=3200).contains(&result.supervision)
-        {
-            return Err(io::Error::other("invalid LE interval parameters"));
-        }
-        Ok(result)
-    }
-    fn log(self, stage: &str) {
-        tracing::info!(
-            requested_interval_ms = 7.5,
-            observed_interval_ms = f64::from(self.interval) * 1.25,
-            latency = self.latency,
-            supervision_ms = u32::from(self.supervision) * 10,
-            evidence = stage,
-            "observed LE connection parameters"
-        );
-    }
-}
-fn word(p: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([p[offset], p[offset + 1]])
+const LOW_LATENCY: ConnectionParameters = ConnectionParameters::LOW_LATENCY;
+
+fn log_parameters(parameters: Parameters, stage: &str) {
+    tracing::info!(
+        requested_interval_ms = LOW_LATENCY.interval_ms(),
+        observed_interval_ms = f64::from(parameters.interval) * 1.25,
+        latency = parameters.latency,
+        supervision_ms = u32::from(parameters.supervision) * 10,
+        evidence = stage,
+        "observed LE connection parameters"
+    );
 }
 
-#[derive(Debug)]
-enum Event<'a> {
-    Connected {
-        handle: u16,
-        role: u8,
-        address_type: u8,
-        address: &'a [u8],
-        parameters: Parameters,
-    },
-    Disconnected(u16),
-    Updated(u16, u8, Option<Parameters>),
-    CommandStatus(u8),
-    Other,
-}
-fn parse(p: &[u8]) -> io::Result<Event<'_>> {
-    if p.len() < 3 || p[0] != 4 || p.len() != usize::from(p[2]) + 3 {
-        return Err(io::Error::other("malformed HCI event framing"));
-    }
-    Ok(match p[1] {
-        5 if p.len() == 7 && p[3] == 0 => Event::Disconnected(word(p, 4)),
-        0x0f if p.len() == 7 && word(p, 5) == 0x2013 => Event::CommandStatus(p[3]),
-        0x0e if p.len() >= 7 && word(p, 4) == 0x2013 => Event::CommandStatus(p[6]),
-        0x3e => {
-            let subevent = *p
-                .get(3)
-                .ok_or_else(|| io::Error::other("missing LE subevent"))?;
-            match subevent {
-                // Legacy, enhanced, and enhanced-v2 share this identity prefix.
-                1 | 0x0a | 0x29 => {
-                    let minimum = if subevent == 1 {
-                        22
-                    } else if subevent == 0x0a {
-                        34
-                    } else {
-                        37
-                    };
-                    if p.len() < minimum {
-                        return Err(io::Error::other("short LE connection event"));
-                    }
-                    if p[4] != 0 {
-                        return Ok(Event::Other);
-                    }
-                    let offset = if subevent == 1 { 15 } else { 27 };
-                    Event::Connected {
-                        handle: word(p, 5),
-                        role: p[7],
-                        address_type: p[8],
-                        address: &p[9..15],
-                        parameters: Parameters::parse(&p[offset..offset + 6])?,
-                    }
-                }
-                3 => {
-                    if p.len() != 13 {
-                        return Err(io::Error::other("short LE update event"));
-                    }
-                    Event::Updated(
-                        word(p, 5),
-                        p[4],
-                        if p[4] == 0 {
-                            Some(Parameters::parse(&p[7..13])?)
-                        } else {
-                            None
-                        },
-                    )
-                }
-                _ => Event::Other,
-            }
-        }
-        _ => Event::Other,
-    })
-}
 struct Connection {
     handle: u16,
     peer: Address,
@@ -234,18 +144,15 @@ async fn request_inner(
     }
     connection.valid(live_handle()?)?;
     if let Some(parameters) = connection.observed {
-        parameters.log("connection complete (before request)");
+        log_parameters(parameters, "connection complete (before request)");
     }
-    let [lo, hi] = connection.handle.to_le_bytes();
-    let command = [
-        1, 0x13, 0x20, 14, lo, hi, 6, 0, 6, 0, 0, 0, 200, 0, 0, 0, 0, 0,
-    ];
+    let command = LOW_LATENCY.encode_update(connection.handle);
     // No generic UAPI pins this handle between the fd check and HCI execution.
     // Submit once, never retry/restore a potentially stale handle.
     connection.valid(live_handle()?)?;
     events.try_send(&command)?;
     tracing::info!(
-        requested_interval_ms = 7.5,
+        requested_interval_ms = LOW_LATENCY.interval_ms(),
         handle = connection.handle,
         "submitted standard LE interval request; awaiting observed completion"
     );
@@ -267,9 +174,12 @@ async fn request_inner(
         let updated = connection.observe(&p[..n])?;
         connection.valid(live_handle()?)?;
         if let Some(parameters) = updated {
-            parameters.log("LE connection update complete");
-            if parameters.interval != 6 {
-                tracing::warn!("observed interval differs from requested 7.5ms");
+            log_parameters(parameters, "LE connection update complete");
+            if parameters.interval != LOW_LATENCY.min {
+                tracing::warn!(
+                    "observed interval differs from requested {}ms",
+                    LOW_LATENCY.interval_ms()
+                );
             }
             return Ok(());
         }
@@ -305,12 +215,7 @@ mod tests {
         let fake_controller = async {
             let mut p = [0; 260];
             let n = controller.recv(&mut p).await.unwrap();
-            assert_eq!(
-                &p[..n],
-                &[
-                    1, 0x13, 0x20, 14, 1, 2, 6, 0, 6, 0, 0, 0, 200, 0, 0, 0, 0, 0
-                ]
-            );
+            assert_eq!(&p[..n], &LOW_LATENCY.encode_update(0x201));
             // Neither an unrelated handle nor Command Status proves our interval.
             controller.send(&updated(0x202, 6)).await.unwrap();
             controller
@@ -462,7 +367,7 @@ mod tests {
             let fake = async {
                 let mut p = [0; 260];
                 controller.recv(&mut p).await.unwrap();
-                assert_eq!(word(&p, 4), handle);
+                assert_eq!(&p[..18], &LOW_LATENCY.encode_update(handle));
                 controller.send(&updated(handle, 12)).await.unwrap();
             };
             let (result, ()) = tokio::join!(request(&events, peer(), 2, || Ok(handle)), fake);
