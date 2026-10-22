@@ -20,7 +20,7 @@ Attach tries released layouts newest first and retries only STATUS_BUFFER_TOO_SM
 
 ## Validation performed on Linux, 2026-10-22
 
-Final integrated revision checked: `aaff3b6` plus removal of a duplicate Linux `vhci` module declaration introduced by the integration merge, including shared application cleanup `7fad599`, CLI validation fix `13f8093`, lifecycle/latency tests `86a7085`, native pre-cancellation fix `63e04d9`, and native resource-test correction `11d0082`. Application composition `4f28014` was merged with the native smoke method in `9b008e0`.
+Earlier integrated revision checked: `aaff3b6` plus removal of a duplicate Linux `vhci` module declaration introduced by the integration merge, including shared application cleanup `7fad599`, CLI validation fix `13f8093`, lifecycle/latency tests `86a7085`, native pre-cancellation fix `63e04d9`, and native resource-test correction `11d0082`. Application composition `4f28014` was merged with the native smoke method in `9b008e0`.
 
 Host tools: rustc 1.100.0-nightly (0dfb098f3), cargo 1.100.0-nightly, clang-cl/LLD 23.1.3, cargo-xwin 0.23.1, Wine 11.20. The MSVC target was installed; MinGW was absent. cargo-xwin downloaded Microsoft's CRT/SDK for executable linking. Temporary checkers and tooling are outside the repository.
 
@@ -46,6 +46,27 @@ Release measurement conditions: Windows-target executable under Wine on this Lin
 Shared app review findings (pending-attach cancellation reporting setup failure; server-first exit dropping rather than draining attach) were fixed centrally in `7fad599` and included in the final build/tests. Native attach additionally checks pre-cancellation before argument encoding or SetupDi discovery, and preserves cancellation during failure cleanup.
 
 Native Windows CI must still build and execute the suite on Windows: Wine is additional evidence, not Windows OS acceptance. No physical Windows Bluetooth adapter, controller, usbip-win2 kernel driver, wireless interval/latency, or virtual-device enumeration acceptance was performed or claimed. Encoding and cleanup tests do not establish driver/hardware operation.
+
+## Rust-only cutover revalidation
+
+Final code revision tested: **`f60f256260a44c3025088f54cf93276980426c01`**, fast-forward merged onto `feat/rust-windows`. This includes Rust-only cutover `b56f3e3`, Windows evidence/fix `b2618c1`, and the controller subscription-race fix plus three additional primary session tests in `f60f256`. No implementation changes were needed during this revalidation; no original-checkout files or deleted legacy sources were edited.
+
+Reran successfully on the same Linux host/toolchain:
+
+- `cargo clippy --target x86_64-pc-windows-msvc --workspace --all-targets -- -D warnings`.
+- `cargo fmt --all -- --check` and `git diff --check`.
+- `cargo-xwin build --target x86_64-pc-windows-msvc --workspace --release` (actual Windows executable linked).
+- `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=wine WINEDEBUG=-all cargo-xwin test --target x86_64-pc-windows-msvc --workspace`: **52 passed**, 2 measurement tests ignored in this invocation. Counts: 13 bridge/native/CLI, 3 lifecycle, 6 session, 27 protocol, 3 fixtures. All three new discovery/pairing/cache/host-bypass/pair-once, forget/bounded-retry, and leading-edge/latest-rumble/setup-output tests passed.
+- `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=wine WINEDEBUG=-all cargo-xwin test --release --target x86_64-pc-windows-msvc -p ns2pro-bridge --test linux_latency -- --ignored --nocapture --test-threads=1`: **2 passed** explicitly.
+
+Updated release measurements (10,000 samples each, same warmup/single-thread/paused-time/in-memory conditions):
+
+| Measured path under Wine | p50 | p99 | Maximum | Allocations / bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Pure BLE decode to encoded USB/IP response | 100 ns | 100 ns | 1,700 ns | 0 / 0 |
+| Fake GATT notification to in-memory USB/IP peer | 4,700 ns | 6,000 ns | 23,600 ns | 0 / 0 |
+
+These remain cross-build and Wine execution results. Native Windows CI, Bluetooth/controller hardware, usbip-win2 kernel-driver attach, and native Windows latency were not executed or claimed.
 
 ## Primary references
 
