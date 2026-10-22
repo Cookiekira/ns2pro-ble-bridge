@@ -129,7 +129,7 @@ impl Observer {
                 tracing::warn!(
                     %error,
                     requested_interval_ms = LOW_LATENCY.interval_ms(),
-                    "LE interval request unavailable (needs CAP_NET_RAW); continuing input"
+                    "LE interval request unavailable; continuing input"
                 );
                 None
             }

@@ -93,48 +93,6 @@ fn check_write(n: usize, expected: usize) -> io::Result<()> {
         Ok(())
     }
 }
-#[repr(C)]
-struct CapabilityHeader {
-    version: u32,
-    pid: libc::c_int,
-}
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct CapabilityData {
-    effective: u32,
-    permitted: u32,
-    inheritable: u32,
-}
-fn require_net_raw(effective: u32) -> io::Result<()> {
-    const CAP_NET_RAW: u32 = 13;
-    if effective & (1 << CAP_NET_RAW) == 0 {
-        Err(io::Error::from_raw_os_error(libc::EPERM))
-    } else {
-        Ok(())
-    }
-}
-fn check_hci_capability() -> io::Result<()> {
-    // Linux capability ABI v3 writes two 32-bit capability words. pid 0 checks
-    // the calling thread, whose credentials will also be used to open the socket.
-    let mut header = CapabilityHeader {
-        version: 0x20080522,
-        pid: 0,
-    };
-    let mut data = [CapabilityData::default(); 2];
-    // SAFETY: header and data match the v3 capget ABI and remain writable for
-    // the syscall; the kernel receives storage for both capability words.
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_capget,
-            &mut header as *mut CapabilityHeader,
-            data.as_mut_ptr(),
-        )
-    };
-    if result < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    require_net_raw(data[0].effective)
-}
 #[derive(Debug)]
 pub(super) struct Socket(AsyncFd<OwnedFd>);
 #[repr(C)]
@@ -165,11 +123,8 @@ struct HciFilter {
 }
 impl Socket {
     /// Observe only this adapter; never take over HCI_CHANNEL_USER or modify
-    /// controller-wide event masks. LE commands/events require CAP_NET_RAW.
+    /// controller-wide event masks.
     pub(super) fn hci(index: u16) -> io::Result<Self> {
-        // Without CAP_NET_RAW the kernel can open an untrusted socket that
-        // silently filters LE meta events. Reject it before creating the observer.
-        check_hci_capability()?;
         let fd = Self::create(libc::SOCK_RAW, BTPROTO_HCI)?;
         let filter = HciFilter {
             packet_types: 1 << 4,
@@ -389,21 +344,7 @@ pub(super) fn pair() -> (Socket, Socket) {
 mod tests {
     use super::*;
     #[test]
-    fn hci_requires_effective_net_raw() {
-        // CAP_NET_ADMIN alone cannot make an HCI observer trusted, even for root.
-        for effective in [0, 1 << 12, !(1 << 13)] {
-            assert_eq!(
-                require_net_raw(effective).unwrap_err().kind(),
-                io::ErrorKind::PermissionDenied
-            );
-        }
-        require_net_raw(1 << 13).unwrap();
-        require_net_raw(u32::MAX).unwrap();
-    }
-    #[test]
     fn bluetooth_socket_abi_layouts() {
-        assert_eq!(mem::size_of::<CapabilityHeader>(), 8);
-        assert_eq!(mem::size_of::<CapabilityData>(), 12);
         assert_eq!(mem::size_of::<L2capConnectionInfo>(), 6);
         assert_eq!(mem::size_of::<L2capAddress>(), 14);
         assert_eq!(mem::size_of::<HciAddress>(), 6);

@@ -1,4 +1,4 @@
-//! Descriptor bytes ported from VIIPER (GPL-3.0), golden exports retained in fixtures/viiper.
+//! Descriptor bytes ported from VIIPER (GPL-3.0), golden exports retained in crates/ns2pro-usb/tests/fixtures/viiper.
 pub const DEVICE_DESC: &[u8] = &[
     18, 1, 0, 2, 239, 2, 1, 64, 126, 5, 105, 32, 0, 2, 1, 2, 3, 1,
 ];

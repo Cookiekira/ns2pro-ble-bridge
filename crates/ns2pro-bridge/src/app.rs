@@ -31,7 +31,7 @@ impl AppError {
     pub fn hint(&self) -> &'static str {
         match self {
             Self::Bluetooth(_) => {
-                "Linux Bluetooth needs CAP_NET_ADMIN (root or setcap cap_net_admin+ep); Windows needs a Bluetooth LE adapter and permission."
+                "Linux: run as root (sudo). Windows: needs a Bluetooth LE adapter and permission."
             }
             Self::Attach(_) => {
                 "Linux: sudo modprobe vhci-hcd and run auto-attach as root. Windows: install a supported usbip-win2 driver. Use --no-auto-attach for a manual host."

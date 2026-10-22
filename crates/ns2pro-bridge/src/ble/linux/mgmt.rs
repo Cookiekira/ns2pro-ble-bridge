@@ -21,7 +21,7 @@ impl Management {
             })
             .map_err(|e| {
                 BleError::Platform(format!(
-                    "open Bluetooth management socket: {e}; grant CAP_NET_ADMIN or run as root"
+                    "open Bluetooth management socket: {e}; run as root (sudo)"
                 ))
             })
     }
