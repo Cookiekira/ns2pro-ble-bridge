@@ -23,7 +23,7 @@ unchecked unless individually evidenced; see [integration evidence](rust-integra
 - [ ] Buttons, both calibrated sticks, battery/charging and IMU reach host correctly.
 - [x] User confirms Steam controller-test Rumble works on the tested Linux setup.
 - [ ] Verify sustained/rapid rumble updates and latest-value 20 ms throttle on hardware.
-- [ ] Host player LEDs reach controller and replay after reconnect.
+- [x] User confirms player indicators are steady after connection and restore after reconnect on the tested Linux setup. Arbitrary host-selected LED patterns were not separately checked.
 - [ ] Loss publishes neutral buttons/sticks/motion, then reconnects after return.
 - [ ] Old rumble cannot replay; pending bulk/IN/UNLINK behave correctly.
 - [ ] `--forget-device`, explicit address, host override and pair-host-once behave correctly.

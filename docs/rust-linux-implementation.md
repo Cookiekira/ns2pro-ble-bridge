@@ -261,3 +261,8 @@ The user also confirmed Steam controller-test Rumble works. This validates the
 basic host-output-to-controller vibration path on the tested setup. Sustained or
 rapid updates, measured throttle timing and stale-rumble behavior across reconnect
 were not separately exercised by this confirmation.
+
+
+The user subsequently confirmed player indicators remain steady after connection
+and restore after reconnect. This records the observed indicator behavior on the
+same Linux setup; arbitrary host-selected LED patterns were not separately tested.
