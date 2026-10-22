@@ -23,17 +23,31 @@ struct Shared {
     closed: CancellationToken,
 }
 impl Shared {
+    fn new(socket: Socket) -> Self {
+        Self {
+            socket,
+            peer_mtu: AtomicU16::new(att::MTU),
+            pending: Mutex::new(None),
+            sinks: Mutex::new(vec![]),
+            transaction: AsyncMutex::new(()),
+            closed: CancellationToken::new(),
+        }
+    }
     async fn send(&self, p: &[u8]) -> Result<(), LinkError> {
         // SOCK_SEQPACKET writes one whole ATT PDU per send. Concurrent writers
         // cannot interleave bytes; only request/reply transactions need a lock.
-        tokio::select! {biased;_=self.closed.cancelled()=>Err(LinkError::Closed),result=self.socket.send(p)=>result.map_err(Into::into)}
+        tokio::select! {
+            biased;
+            _ = self.closed.cancelled() => Err(LinkError::Closed),
+            result = self.socket.send(p) => result.map_err(Into::into),
+        }
     }
     fn close(&self) {
         self.closed.cancel();
         self.socket.shutdown();
         self.pending.lock().unwrap().take();
     }
-    async fn request(&self, p: &[u8]) -> Result<Vec<u8>, LinkError> {
+    async fn transact(&self, p: &[u8]) -> Result<Vec<u8>, LinkError> {
         let _transaction = self.transaction.lock().await;
         let (tx, rx) = oneshot::channel();
         *self.pending.lock().unwrap() = Some(tx);
@@ -49,10 +63,13 @@ impl Shared {
         }
         let mut guard = Guard(self, true);
         self.send(p).await?;
-        let result = tokio::select! {biased;_=self.closed.cancelled()=>return Err(LinkError::Closed),result=timeout(Duration::from_secs(2),rx)=>result.map_err(|_|LinkError::Timeout)?.map_err(|_|LinkError::Closed)?};
-        if result.first() == Some(&1) {
-            return Err(LinkError::Platform(format!("ATT error: {result:02x?}")));
-        }
+        let result = tokio::select! {
+            biased;
+            _ = self.closed.cancelled() => return Err(LinkError::Closed),
+            result = timeout(Duration::from_secs(2), rx) => {
+                result.map_err(|_| LinkError::Timeout)?.map_err(|_| LinkError::Closed)?
+            }
+        };
         guard.1 = false;
         Ok(result)
     }
@@ -74,14 +91,7 @@ impl std::fmt::Debug for AttLink {
 }
 impl AttLink {
     pub(super) async fn open(socket: Socket) -> Result<Self, LinkError> {
-        let shared = Arc::new(Shared {
-            socket,
-            peer_mtu: AtomicU16::new(att::MTU),
-            pending: Mutex::new(None),
-            sinks: Mutex::new(vec![]),
-            transaction: AsyncMutex::new(()),
-            closed: CancellationToken::new(),
-        });
+        let shared = Arc::new(Shared::new(socket));
         let task_shared = shared.clone();
         let reader = tokio::spawn(async move {
             read_loop(&task_shared).await;
@@ -90,13 +100,13 @@ impl AttLink {
         let mut link = Self {
             shared,
             handles: vec![],
-            mtu: 23,
+            mtu: att::DEFAULT_MTU,
             reader: Mutex::new(Some(reader)),
         };
         let mut discovery = Discovery::new();
         while let Some(request) = discovery.request() {
             // Discovery consumes ATT attribute-not-found as a normal range terminator.
-            let response = link.discovery_request(&request).await?;
+            let response = link.shared.transact(&request).await?;
             discovery
                 .on_response(&response)
                 .map_err(|e| LinkError::Platform(e.to_string()))?;
@@ -106,13 +116,6 @@ impl AttLink {
             .finish()
             .map_err(|e| LinkError::Platform(e.to_string()))?;
         Ok(link)
-    }
-    async fn discovery_request(&self, p: &[u8]) -> Result<Vec<u8>, LinkError> {
-        let _transaction = self.shared.transaction.lock().await;
-        let (tx, rx) = oneshot::channel();
-        *self.shared.pending.lock().unwrap() = Some(tx);
-        self.shared.send(p).await?;
-        tokio::select! {biased;_=self.shared.closed.cancelled()=>Err(LinkError::Closed),r=timeout(Duration::from_secs(2),rx)=>r.map_err(|_|LinkError::Timeout)?.map_err(|_|LinkError::Closed)}
     }
     fn handles(&self, c: Characteristic) -> Result<Handles, LinkError> {
         self.handles
@@ -140,10 +143,9 @@ impl GattLink for AttLink {
         }
         let handle = self.handles(c)?.value;
         let mut p = [0u8; att::MTU as usize];
-        p[0] = 0x52;
-        p[1..3].copy_from_slice(&handle.to_le_bytes());
-        p[3..value.len() + 3].copy_from_slice(value);
-        self.shared.send(&p[..value.len() + 3]).await
+        self.shared
+            .send(att::write_command(&mut p, handle, value))
+            .await
     }
     async fn subscribe(&self, c: Characteristic, sink: NotificationSink) -> Result<(), LinkError> {
         let h = self.handles(c)?;
@@ -155,10 +157,13 @@ impl GattLink for AttLink {
             sinks.retain(|(handle, _)| *handle != h.value);
             sinks.push((h.value, sink));
         }
-        let [a, b] = cccd.to_le_bytes();
-        let result = self.shared.request(&[0x12, a, b, 1, 0]).await;
+        let result = self.shared.transact(&att::cccd_write_request(cccd)).await;
         match result {
-            Ok(p) if p == [0x13] => Ok(()),
+            Ok(p) if p == att::WRITE_RESPONSE => Ok(()),
+            Ok(p) if p.first() == Some(&att::ERROR_RESPONSE) => {
+                self.shared.close();
+                Err(LinkError::Platform(format!("ATT error: {p:02x?}")))
+            }
             Ok(_) => {
                 self.shared.close();
                 Err(LinkError::Platform("invalid CCCD write response".into()))
@@ -180,7 +185,14 @@ impl GattLink for AttLink {
 async fn read_loop(shared: &Shared) {
     let mut buffer = [0u8; 517];
     loop {
-        let count = tokio::select! {biased;_=shared.closed.cancelled()=>return,result=shared.socket.recv(&mut buffer)=>match result{Ok(0)|Err(_)=>return,Ok(n)=>n}};
+        let count = tokio::select! {
+            biased;
+            _ = shared.closed.cancelled() => return,
+            result = shared.socket.recv(&mut buffer) => match result {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            },
+        };
         let packet = match att::classify(&buffer[..count]) {
             Ok(p) => p,
             Err(e) => {
@@ -200,16 +212,19 @@ async fn read_loop(shared: &Shared) {
                         sink(value);
                     }
                 }
-                if indication { Some(vec![0x1e]) } else { None }
+                if indication {
+                    Some(att::HANDLE_VALUE_CONFIRMATION.to_vec())
+                } else {
+                    None
+                }
             }
             Packet::Mtu(peer) => {
                 shared.peer_mtu.store(peer.min(att::MTU), Ordering::Relaxed);
                 tracing::debug!(peer_mtu = peer, "peer ATT MTU exchange");
-                Some(vec![3, 247, 0])
+                Some(att::mtu_response().to_vec())
             }
             Packet::Request { opcode, handle } => {
-                let [a, b] = handle.to_le_bytes();
-                Some(vec![1, opcode, a, b, 6])
+                Some(att::error_response(opcode, handle, att::REQUEST_NOT_SUPPORTED).to_vec())
             }
             Packet::Response(p) => {
                 if let Some(tx) = shared.pending.lock().unwrap().take() {
@@ -234,14 +249,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_requests_wait_for_each_reply() {
         let (socket, peer) = super::super::socket::pair();
-        let shared = Arc::new(Shared {
-            socket,
-            peer_mtu: AtomicU16::new(att::MTU),
-            pending: Mutex::new(None),
-            sinks: Mutex::new(vec![]),
-            transaction: AsyncMutex::new(()),
-            closed: CancellationToken::new(),
-        });
+        let shared = Arc::new(Shared::new(socket));
         let reader_shared = shared.clone();
         let reader = tokio::spawn(async move { read_loop(&reader_shared).await });
         let first = [0x12, 1, 0, 1, 0];
@@ -261,7 +269,7 @@ mod tests {
             peer.send(&[0x13]).await.unwrap();
         };
         let (a, b, ()) = timeout(Duration::from_secs(2), async {
-            tokio::join!(shared.request(&first), shared.request(&second), server)
+            tokio::join!(shared.transact(&first), shared.transact(&second), server)
         })
         .await
         .unwrap();
@@ -287,14 +295,7 @@ mod tests {
             },
             0
         );
-        let shared = Shared {
-            socket,
-            peer_mtu: AtomicU16::new(att::MTU),
-            pending: Mutex::new(None),
-            sinks: Mutex::new(vec![]),
-            transaction: AsyncMutex::new(()),
-            closed: CancellationToken::new(),
-        };
+        let shared = Shared::new(socket);
         let completed = std::cell::Cell::new(0);
         let writes = async {
             for seq in 0..256u16 {
@@ -354,14 +355,7 @@ mod tests {
     #[tokio::test]
     async fn peer_requests_indications_and_disconnect() {
         let (a, b) = super::super::socket::pair();
-        let shared = Arc::new(Shared {
-            socket: a,
-            peer_mtu: AtomicU16::new(att::MTU),
-            pending: Mutex::new(None),
-            sinks: Mutex::new(vec![]),
-            transaction: AsyncMutex::new(()),
-            closed: CancellationToken::new(),
-        });
+        let shared = Arc::new(Shared::new(a));
         let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
         let copy = seen.clone();
         shared
@@ -392,15 +386,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn cancelled_or_timed_out_transaction_closes_untagged_link() {
         let (a, b) = super::super::socket::pair();
-        let shared = Arc::new(Shared {
-            socket: a,
-            peer_mtu: AtomicU16::new(att::MTU),
-            pending: Mutex::new(None),
-            sinks: Mutex::new(vec![]),
-            transaction: AsyncMutex::new(()),
-            closed: CancellationToken::new(),
-        });
-        let transaction = shared.request(&[0x12, 1, 0, 1, 0]);
+        let shared = Arc::new(Shared::new(a));
+        let transaction = shared.transact(&[0x12, 1, 0, 1, 0]);
         let peer = async {
             let mut p = [0; 32];
             assert_eq!(b.recv(&mut p).await.unwrap(), 5);
@@ -411,6 +398,55 @@ mod tests {
         assert!(shared.closed.is_cancelled());
         let mut p = [0; 32];
         assert_eq!(b.recv(&mut p).await.unwrap(), 0);
+    }
+    #[tokio::test]
+    async fn dropping_in_flight_transaction_closes_link() {
+        let (socket, peer) = super::super::socket::pair();
+        let shared = Shared::new(socket);
+        let request = att::cccd_write_request(1);
+        let mut transaction = Box::pin(shared.transact(&request));
+        let mut p = [0; 32];
+        let n = tokio::select! {
+            result = &mut transaction => panic!("transaction completed before reply: {result:?}"),
+            result = peer.recv(&mut p) => result.unwrap(),
+        };
+        assert_eq!(n, request.len());
+        drop(transaction);
+        assert!(shared.closed.is_cancelled());
+        assert_eq!(peer.recv(&mut p).await.unwrap(), 0);
+    }
+    #[tokio::test]
+    async fn subscribe_att_error_preserves_error_and_closes_link() {
+        let (socket, peer) = super::super::socket::pair();
+        let shared = Arc::new(Shared::new(socket));
+        let reader_shared = shared.clone();
+        let reader = tokio::spawn(async move { read_loop(&reader_shared).await });
+        let link = AttLink {
+            shared,
+            handles: vec![Handles {
+                characteristic: Characteristic::Input,
+                value: 7,
+                cccd: Some(8),
+            }],
+            mtu: att::MTU,
+            reader: Mutex::new(Some(reader)),
+        };
+        let server = async {
+            let mut p = [0; 32];
+            let n = peer.recv(&mut p).await.unwrap();
+            assert_eq!(&p[..n], &[0x12, 8, 0, 1, 0]);
+            peer.send(&att::error_response(0x12, 8, 3)).await.unwrap();
+            assert_eq!(peer.recv(&mut p).await.unwrap(), 0);
+        };
+        let (result, ()) = tokio::join!(
+            link.subscribe(Characteristic::Input, Box::new(|_| {})),
+            server
+        );
+        assert!(
+            matches!(result, Err(LinkError::Platform(message)) if message == "ATT error: [01, 12, 08, 00, 03]")
+        );
+        assert!(link.closed().is_cancelled());
+        link.close().await;
     }
     #[tokio::test]
     async fn discovers_real_handles_subscribes_and_writes_wire_bytes() {

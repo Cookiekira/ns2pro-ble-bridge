@@ -2,7 +2,35 @@
 use crate::gatt::Characteristic;
 use uuid::Uuid;
 
+pub const DEFAULT_MTU: u16 = 23;
 pub const MTU: u16 = 247;
+pub const ERROR_RESPONSE: u8 = 0x01;
+pub const WRITE_RESPONSE: [u8; 1] = [0x13];
+pub const HANDLE_VALUE_CONFIRMATION: [u8; 1] = [0x1e];
+pub const REQUEST_NOT_SUPPORTED: u8 = 0x06;
+
+pub fn write_command<'a>(buffer: &'a mut [u8], handle: u16, value: &[u8]) -> &'a [u8] {
+    buffer[0] = 0x52;
+    buffer[1..3].copy_from_slice(&handle.to_le_bytes());
+    buffer[3..3 + value.len()].copy_from_slice(value);
+    &buffer[..3 + value.len()]
+}
+pub fn cccd_write_request(handle: u16) -> [u8; 5] {
+    let [a, b] = handle.to_le_bytes();
+    [0x12, a, b, 1, 0]
+}
+pub fn mtu_request() -> [u8; 3] {
+    let [a, b] = MTU.to_le_bytes();
+    [0x02, a, b]
+}
+pub fn mtu_response() -> [u8; 3] {
+    let [a, b] = MTU.to_le_bytes();
+    [0x03, a, b]
+}
+pub fn error_response(request: u8, handle: u16, code: u8) -> [u8; 5] {
+    let [a, b] = handle.to_le_bytes();
+    [ERROR_RESPONSE, request, a, b, code]
+}
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AttError {
     #[error("malformed or out-of-order ATT PDU")]
@@ -70,7 +98,7 @@ impl Discovery {
             stage: Stage::Mtu,
             services: vec![],
             declarations: vec![],
-            mtu: 23,
+            mtu: DEFAULT_MTU,
         }
     }
     pub fn mtu(&self) -> u16 {
@@ -78,7 +106,7 @@ impl Discovery {
     }
     pub fn request(&self) -> Option<Vec<u8>> {
         match self.stage {
-            Stage::Mtu => Some(vec![2, 247, 0]),
+            Stage::Mtu => Some(mtu_request().to_vec()),
             Stage::Services(start) => Some(range(0x10, start, 0xffff, Some(0x2800))),
             Stage::Characteristics(s, start) => {
                 Some(range(8, start, self.services[s].end, Some(0x2803)))
@@ -124,7 +152,7 @@ impl Discovery {
     }
     pub fn on_response(&mut self, p: &[u8]) -> Result<(), AttError> {
         let req = self.request().ok_or(AttError::Malformed)?;
-        if p.first() == Some(&1) {
+        if p.first() == Some(&ERROR_RESPONSE) {
             if p.len() != 5 || p[1] != req[0] {
                 return Err(AttError::Malformed);
             }
@@ -155,7 +183,7 @@ impl Discovery {
         }
         match self.stage {
             Stage::Mtu => {
-                if p.len() != 3 || word(p, 1)? < 23 {
+                if p.len() != 3 || word(p, 1)? < DEFAULT_MTU {
                     return Err(AttError::Malformed);
                 }
                 self.mtu = MTU.min(word(p, 1)?);
@@ -303,7 +331,7 @@ pub fn classify(p: &[u8]) -> Result<Packet<'_>, AttError> {
             value: &p[3..],
             indication: op == 0x1d,
         }),
-        2 if p.len() == 3 && word(p, 1)? >= 23 => Ok(Packet::Mtu(word(p, 1)?)),
+        2 if p.len() == 3 && word(p, 1)? >= DEFAULT_MTU => Ok(Packet::Mtu(word(p, 1)?)),
         2 => Err(AttError::Malformed),
         1 | 3 | 5 | 9 | 0x0b | 0x0d | 0x0f | 0x11 | 0x13 | 0x17 | 0x19 | 0x21 => {
             Ok(Packet::Response(p))
