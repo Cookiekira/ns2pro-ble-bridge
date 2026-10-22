@@ -20,26 +20,32 @@ Attach tries released layouts newest first and retries only STATUS_BUFFER_TOO_SM
 
 ## Validation performed on Linux, 2026-10-22
 
-Host tools: rustc 1.100.0-nightly (0dfb098f3), cargo 1.100.0-nightly, clang-cl/LLD 23.1.3, cargo-xwin 0.23.1, Wine 11.20. The MSVC target was installed; MinGW was absent. cargo-xwin downloaded Microsoft's CRT/SDK for executable linking. The temporary checker and cross-build tooling are outside the repository.
+Final integrated revision checked: `aaff3b6` plus removal of a duplicate Linux `vhci` module declaration introduced by the integration merge, including shared application cleanup `7fad599`, CLI validation fix `13f8093`, lifecycle/latency tests `86a7085`, native pre-cancellation fix `63e04d9`, and native resource-test correction `11d0082`. Application composition `4f28014` was merged with the native smoke method in `9b008e0`.
 
-- `cargo check --target x86_64-pc-windows-msvc --workspace --all-targets`: passed after foundation merge and after `7551282`.
-- `cargo test --workspace`: 36 passed on Linux at `7600e61` (6 bridge, 27 protocol, 3 fixture tests).
-- `cargo-xwin build --target x86_64-pc-windows-msvc --workspace`: passed; Windows PE executable linked.
-- `cargo-xwin test --target x86_64-pc-windows-msvc --workspace --no-run`: passed; all Windows test executables linked.
-- `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=wine WINEDEBUG=-all cargo-xwin test --target x86_64-pc-windows-msvc --workspace`: **42 passed under Wine** at `7600e61` (12 bridge, 27 protocol, 3 fixture tests).
-- Isolated Windows-native modules plus the exact shared contracts and protocol source files: `cargo clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings` passed after `7551282`. Whole-workspace strict clippy at the shared foundation stopped on an existing `pairing.rs` collapsible-match warning, reported to the core owner for integration.
+Host tools: rustc 1.100.0-nightly (0dfb098f3), cargo 1.100.0-nightly, clang-cl/LLD 23.1.3, cargo-xwin 0.23.1, Wine 11.20. The MSVC target was installed; MinGW was absent. cargo-xwin downloaded Microsoft's CRT/SDK for executable linking. Temporary checkers and tooling are outside the repository.
 
-Native-specific tests exercise actual WinRT buffer allocation/IBufferByteAccess pointer identity and initialized length, actual owned Windows event-handle release, cancellation scope lifetime, failed GATT statuses, pre-import ABI retry classification, detach completion/idempotence, and five portable IOCTL byte/encoding/error tests. The latter also execute in Linux workspace tests. They do not replace production OS calls with success stubs.
+| Check | Result |
+| --- | --- |
+| `cargo check --target x86_64-pc-windows-msvc --workspace --all-targets` | Passed |
+| `cargo clippy --target x86_64-pc-windows-msvc --workspace --all-targets -- -D warnings` | Passed |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo test --workspace` on Linux | **52 passed**, 2 measurement cases ignored |
+| `cargo-xwin build --target x86_64-pc-windows-msvc --workspace --release` | Passed; actual optimized Windows PE executable linked |
+| `cargo-xwin test --target x86_64-pc-windows-msvc --workspace --no-run` | Passed earlier; final suite also rebuilt/linked as part of execution below |
+| `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=wine WINEDEBUG=-all cargo-xwin test --target x86_64-pc-windows-msvc --workspace` | **49 passed under Wine**, 2 explicitly ignored measurement cases |
+| `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=wine WINEDEBUG=-all cargo-xwin test --release --target x86_64-pc-windows-msvc -p ns2pro-bridge --test linux_latency -- --ignored --nocapture --test-threads=1` | Both measurement cases passed; zero measured steady-state allocations |
 
-Shared session harness `5942cad` was merged in `47982a0`, retaining both platform declarations. After that merge:
+The 49 tests comprise 13 bridge/native/CLI tests, 3 shared lifecycle tests, 3 shared session tests, 27 protocol tests and 3 fixture tests. Session/lifecycle scenarios exercise actual orchestration and USB/IP bytes through Fake GATT and an in-memory peer: immediate input/output routing, pairing rejection, calibration fallback, pending bulk/UNLINK/STALL/partial headers, cache precedence/invalidation/cancellation, partial setup cleanup, neutral input after disconnect, reconnect LED replay and stale rumble removal.
 
-- Windows-target all-target check and whole-workspace strict clippy both passed.
-- Windows-target workspace tests linked and **45 passed under Wine**, including all three shared session scenarios: complete notification-to-USB/output routing, pairing rejection/calibration fallback, and pending bulk/UNLINK/STALL with a partial USB/IP header.
-- Linux workspace tests: **44 passed**; formatting check passed after sorting merged module declarations.
+Native-specific tests exercise real WinRT buffer allocation/IBufferByteAccess pointer identity and initialized length, actual named Windows event-object lifetime, cancellation scope lifetime, failed GATT statuses, pre-import ABI retry classification, pre-cancelled attach, detach completion/idempotence, and five portable IOCTL byte/encoding/error tests. The byte tests also execute in Linux workspace tests. Production OS calls are never replaced with success stubs. The event lifetime test uses a unique kernel-object name because numeric handles may be reused immediately by concurrent test threads.
 
-Application composition `4f28014` was merged in `9b008e0`, together with `WindowsBluetooth::smoke_test()`: enumerate adapters and run an active extended watcher for 500 ms without requiring a matching controller, then explicitly stop and await the stopped event. Drop unregisters/stops on all failure/cancellation paths. With this entrypoint, Windows release build, strict target clippy and all 45 Wine tests passed again. Release CLI execution under Wine verified `--help` exits 0 and invalid `--feature-flags` exits 2. `--bt-smoke-test` exits 1 with an actionable Bluetooth error because Wine's Bluetooth adapter API returns E_NOTIMPL; no successful hardware smoke scan is claimed.
+Release measurement conditions: Windows-target executable under Wine on this Linux host, 10,000 measured samples per case after warmup, one test thread, paused Tokio time and in-memory transport. Pure BLE decode to encoded USB/IP response: p50 100 ns, p99 200 ns, maximum 4,400 ns; Fake GATT notification to in-memory USB/IP peer: p50 4,100 ns, p99 6,000 ns, maximum 21,200 ns. Both reported **0 allocations / 0 allocated bytes** in the measured steady-state region. These figures measure emulated host processing; they do not measure native Windows scheduling, WinRT callback/driver latency, wireless transit or game latency.
 
-Shared app review identified cancellation during pending attach producing an erroneous setup exit and a server-first exit dropping attach before draining it. These were reported to the core owner for correction in shared application code. Final integration must rerun the Windows-target suite after shared cleanup/lifecycle changes. Native Windows CI must still build and execute the suite on Windows: Wine is additional evidence, not Windows OS acceptance. No physical Windows Bluetooth adapter, controller, usbip-win2 kernel driver, wireless interval/latency, or virtual-device enumeration acceptance was performed or claimed. Driver ABI encoding and cleanup tests do not prove driver/hardware operation.
+`WindowsBluetooth::smoke_test()` enumerates adapters and runs an active extended watcher for 500 ms without requiring a matching controller, then explicitly stops and awaits the stopped event. Drop unregisters/stops on failure/cancellation. Release CLI execution under Wine verified `--help` exits 0 and invalid `--feature-flags` exits 2. `--bt-smoke-test` exits 1 with an actionable Bluetooth error because Wine's adapter API returns E_NOTIMPL; no successful hardware smoke scan is claimed.
+
+Shared app review findings (pending-attach cancellation reporting setup failure; server-first exit dropping rather than draining attach) were fixed centrally in `7fad599` and included in the final build/tests. Native attach additionally checks pre-cancellation before argument encoding or SetupDi discovery, and preserves cancellation during failure cleanup.
+
+Native Windows CI must still build and execute the suite on Windows: Wine is additional evidence, not Windows OS acceptance. No physical Windows Bluetooth adapter, controller, usbip-win2 kernel driver, wireless interval/latency, or virtual-device enumeration acceptance was performed or claimed. Encoding and cleanup tests do not establish driver/hardware operation.
 
 ## Primary references
 
