@@ -1,6 +1,7 @@
 //! One standard LE update per live connection, without saved-preference writes.
 //! Handle validation is a snapshot, not an atomic kernel ownership guarantee.
 use super::socket::Socket;
+use crate::ble::Discovered;
 use ns2pro_proto::{
     Address,
     hci::{ConnectionParameters, Event, Parameters, parse},
@@ -118,7 +119,40 @@ impl Connection {
     }
 }
 
-pub(super) async fn request(
+/// Optional HCI observer installed before opening the ATT connection.
+pub(super) struct Observer(Socket);
+
+impl Observer {
+    pub(super) fn open(index: u16) -> Option<Self> {
+        match Socket::hci(index) {
+            Ok(events) => Some(Self(events)),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    requested_interval_ms = LOW_LATENCY.interval_ms(),
+                    "LE interval request unavailable (needs CAP_NET_RAW); continuing input"
+                );
+                None
+            }
+        }
+    }
+
+    pub(super) async fn request(self, socket: &Socket, local: Address, target: &Discovered) {
+        if let Err(error) = request(&self.0, target.address, target.address_type, || {
+            socket.att_handle(local, target.address, target.address_type)
+        })
+        .await
+        {
+            tracing::warn!(
+                %error,
+                requested_interval_ms = LOW_LATENCY.interval_ms(),
+                "LE interval optimization unconfirmed; continuing with negotiated parameters"
+            );
+        }
+    }
+}
+
+async fn request(
     events: &Socket,
     peer: Address,
     address_type: u8,

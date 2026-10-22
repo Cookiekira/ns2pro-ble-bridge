@@ -69,16 +69,7 @@ impl Bluetooth for LinuxBluetooth {
             },
         )
         .await?;
-        // Observe before connect so the handle is tied to a fresh peer epoch.
-        // Missing CAP_NET_RAW is an optional-optimization failure, not a BLE failure.
-        let observer = match socket::Socket::hci(self.index) {
-            Ok(observer) => Some(observer),
-            Err(error) => {
-                tracing::warn!(%error, requested_interval_ms=7.5,
-                    "LE interval request unavailable (needs CAP_NET_RAW); continuing input");
-                None
-            }
-        };
+        let observer = interval::Observer::open(self.index);
         tracing::debug!(address=%target.address, "opening raw ATT connection");
         let socket = timeout(
             Duration::from_secs(10),
@@ -86,15 +77,8 @@ impl Bluetooth for LinuxBluetooth {
         )
         .await
         .map_err(|_| BleError::Timeout)??;
-        if let Some(observer) = observer
-            && let Err(error) =
-                interval::request(&observer, target.address, target.address_type, || {
-                    socket.att_handle(self.address, target.address, target.address_type)
-                })
-                .await
-        {
-            tracing::warn!(%error, requested_interval_ms=7.5,
-                    "LE interval optimization unconfirmed; continuing with negotiated parameters");
+        if let Some(observer) = observer {
+            observer.request(&socket, self.address, target).await;
         }
         tracing::debug!(address=%target.address, "raw ATT connected; discovering GATT");
         let link = AttLink::open(socket)
