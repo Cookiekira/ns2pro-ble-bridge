@@ -20,6 +20,7 @@ runs are kept as history; see [integration evidence](rust-integration-validation
 - [x] First pairing with `--forget-device` and an empty cache file succeeds and writes `{"address":"78:81:8C:E8:54:3F"}` (run A). Re-pairing after cache invalidation also succeeds (run E). Pairing emits no dedicated log line; success is shown by initialization without a cached address.
 - [x] AF_UNIX socketpair attaches through vhci sysfs: `hs 0000 006 002 00010001 000009 8-1` (run A).
 - [x] TCP-fd fallback not needed: the kernel accepted AF_UNIX; no `vhci rejected AF_UNIX` warning. The fallback remains covered by unit tests only.
+- [x] Controller identity (#30, PR #32 build `c9c5221`): the bridge read flash block `0x13000` from the controller, attached vhci only afterwards (log: interval update 12:54:44.379 → `virtual USB controller attached` 12:54:44.823 → initialized 12:54:45.085), and Steam shows `Device Support: HEW700072169 (0x057e,0x2069)` instead of `VIIPERNS2PRO`.
 - [x] Virtual `057e:2069` enumerates at Full Speed 12M, `bcdUSB 2.00`, interfaces HID (3) and vendor (255); Steam opens it (`usbfs`) (run A).
 - [x] User confirms all buttons, both stick ranges and centering, battery level and charging state, and player-LED changes in Steam (run A).
 - [x] User confirms gyroscope/motion control works. Sensor timestamp semantics remain the monotonic receipt fallback (see Timing).

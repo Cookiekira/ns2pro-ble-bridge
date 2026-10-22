@@ -25,6 +25,7 @@ pub struct Ns2ProDevice {
     pro_counter: u8,
     bulk: VecDeque<Vec<u8>>,
     configuration: u8,
+    identity: Option<[u8; 64]>,
 }
 impl Default for Ns2ProDevice {
     fn default() -> Self {
@@ -36,10 +37,21 @@ impl Default for Ns2ProDevice {
             pro_counter: 0,
             bulk: VecDeque::new(),
             configuration: 1,
+            identity: None,
         }
     }
 }
 impl Ns2ProDevice {
+    pub fn set_identity(&mut self, identity: Option<[u8; 64]>) {
+        self.identity = identity;
+    }
+    fn flash_block(&self, address: u32) -> [u8; 64] {
+        if address == 0x13000 {
+            self.identity.unwrap_or_else(|| flash_block(address))
+        } else {
+            flash_block(address)
+        }
+    }
     pub fn interrupt_in(&mut self, sample: &InputSample) -> [u8; 64] {
         self.report_for(self.report, sample)
     }
@@ -114,7 +126,7 @@ impl Ns2ProDevice {
                 let a = u32::from_le_bytes(out[12..16].try_into().unwrap());
                 r.extend([0x40, 0, 0, 0]);
                 r.extend(a.to_le_bytes());
-                r.extend(flash_block(a));
+                r.extend(self.flash_block(a));
             }
             3 => match sub {
                 3 | 0x0d => r.extend([1, 0, 0, 0]),
@@ -241,7 +253,7 @@ impl Ns2ProDevice {
 pub fn flash_block(address: u32) -> [u8; 64] {
     let mut b = [0; 64];
     match address {
-        0x13000 => b[2..18].copy_from_slice(b"VIIPER-NS2PRO-00"),
+        0x13000 => b[2..18].copy_from_slice(b"NS2PRO-BRIDGE-00"),
         0x13080 | 0x130c0 => {
             b[40..43].copy_from_slice(&pack_stick12(2048, 2048));
             b[43..46].copy_from_slice(&pack_stick12(2047, 2047));

@@ -29,7 +29,11 @@ pub async fn serve_urbs<S: AsyncRead + AsyncWrite + Unpin>(
 ) -> io::Result<()> {
     let (reader, mut writer) = tokio::io::split(stream);
     let mut input = channels.input.subscribe();
+    let mut identity = channels.identity.subscribe();
     let mut engine = UrbEngine::default();
+    engine
+        .device
+        .set_identity(identity.borrow_and_update().block());
     let origin = tokio::time::Instant::now();
     let now = || origin.elapsed().as_micros() as u64;
     let mut effects = Effects {
@@ -56,6 +60,12 @@ pub async fn serve_urbs<S: AsyncRead + AsyncWrite + Unpin>(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return Ok(()),
+            changed = identity.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+                engine.device.set_identity(identity.borrow_and_update().block());
+            }
             changed = input.changed() => {
                 if changed.is_err() {
                     return Ok(());

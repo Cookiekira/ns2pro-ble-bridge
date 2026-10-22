@@ -1,7 +1,7 @@
 //! One controller session, command serialization, initialization and output routing.
 use crate::{
     ble::{GattLink, LinkError},
-    channels::Channels,
+    channels::{Channels, Identity},
 };
 use ns2pro_proto::{
     Address,
@@ -100,6 +100,21 @@ impl<'a, L: GattLink> Controller<'a, L> {
             calibration = Calibration::from_blocks(&blocks[0], &blocks[1], Some(&blocks[2]))
                 .unwrap_or_default();
         }
+        let identity = match self
+            .command(&command::spi_read(0x13000, 0x40))
+            .await
+            .and_then(|r| {
+                command::spi_read_data(&r, 0x13000)?
+                    .try_into()
+                    .map_err(|_| command::ResponseError::ShortSpi.into())
+            }) {
+            Ok(block) => Some(block),
+            Err(e) => {
+                tracing::warn!(%e,"identity read failed; using neutral fallback");
+                None
+            }
+        };
+        channels.identity.send_replace(Identity::Resolved(identity));
         self.command(&command::set_feature_mask(0xff)).await?;
         self.command(&command::enable_features(flags)).await?;
         let channels = channels.clone();

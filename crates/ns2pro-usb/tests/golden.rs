@@ -107,13 +107,18 @@ fn all_scenario_fixtures() {
                 _ => panic!(),
             };
             if let Some(result) = result {
-                assert_eq!(
-                    result,
-                    hex(&step["response"]),
-                    "{} / {}",
-                    scenario["name"],
-                    step
-                );
+                let mut expected = hex(&step["response"]);
+                if scenario["name"] == "flash_commands"
+                    && step["op"] == "in"
+                    && expected.get(12..16) == Some(&0x13000u32.to_le_bytes())
+                {
+                    // Intentional identity difference: retain the VIIPER fixture as provenance.
+                    assert_eq!(&expected[18..34], b"VIIPER-NS2PRO-00");
+                    let mut fallback = [0; 64];
+                    fallback[2..18].copy_from_slice(b"NS2PRO-BRIDGE-00");
+                    expected[16..].copy_from_slice(&fallback);
+                }
+                assert_eq!(result, expected, "{} / {}", scenario["name"], step);
             }
             if let Some(expected) = step["outputs"].as_array() {
                 let expected = &expected[0];
