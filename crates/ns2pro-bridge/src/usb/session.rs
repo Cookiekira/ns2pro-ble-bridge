@@ -1,5 +1,6 @@
 //! USB/IP URB loop. The read future survives input/keepalive wakeups and partial reads.
 use crate::channels::Channels;
+use futures::StreamExt;
 use ns2pro_usb::{
     engine::{Effects, UrbEngine},
     usbip::{MAX_TRANSFER, Urb},
@@ -26,7 +27,7 @@ pub async fn serve_urbs<S: AsyncRead + AsyncWrite + Unpin>(
     channels: Channels,
     cancel: CancellationToken,
 ) -> io::Result<()> {
-    let (mut reader, mut writer) = tokio::io::split(stream);
+    let (reader, mut writer) = tokio::io::split(stream);
     let mut input = channels.input.subscribe();
     let mut engine = UrbEngine::default();
     let origin = tokio::time::Instant::now();
@@ -37,47 +38,53 @@ pub async fn serve_urbs<S: AsyncRead + AsyncWrite + Unpin>(
         ..Default::default()
     };
     engine.on_sample(*input.borrow_and_update(), now(), &mut effects);
+    let frames = futures::stream::unfold(reader, |mut reader| async move {
+        let frame = read_urb(&mut reader).await;
+        Some((frame, reader))
+    });
+    tokio::pin!(frames);
     loop {
-        let read = read_urb(&mut reader);
-        tokio::pin!(read);
-        loop {
-            let due = engine
-                .next_keepalive_at()
-                .map(|us| origin + Duration::from_micros(us));
-            let timer = async {
-                match due {
-                    Some(t) => tokio::time::sleep_until(t).await,
-                    None => std::future::pending().await,
+        let due = engine
+            .next_keepalive_at()
+            .map(|us| origin + Duration::from_micros(us));
+        let timer = async {
+            match due {
+                Some(t) => tokio::time::sleep_until(t).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
+            changed = input.changed() => {
+                if changed.is_err() {
+                    return Ok(());
                 }
-            };
-            let mut got_frame = false;
+                engine.on_sample(*input.borrow_and_update(), now(), &mut effects);
+            }
+            frame = frames.next() => {
+                let (u, data) = frame.expect("URB stream is infinite")?;
+                engine.submit(u, &data, now(), &mut effects);
+            }
+            _ = timer => engine.on_keepalive_due(now(), &mut effects),
+        }
+        // ACK accepted OUT before waking controller output work. write_all handles short writes.
+        if !effects.replies.is_empty() {
             tokio::select! {
-                biased;
-                _=cancel.cancelled()=>return Ok(()),
-                changed=input.changed()=>{if changed.is_err(){return Ok(())}engine.on_sample(*input.borrow_and_update(),now(),&mut effects);},
-                frame=&mut read=>{let(u,data)=frame?;engine.submit(u,&data,now(),&mut effects);got_frame=true;},
-                _=timer=>engine.on_keepalive_due(now(),&mut effects),
+                _ = cancel.cancelled() => return Ok(()),
+                result = writer.write_all(&effects.replies) => result?,
             }
-            // ACK accepted OUT before waking controller output work. write_all handles short writes.
-            if !effects.replies.is_empty() {
-                tokio::select! {_=cancel.cancelled()=>return Ok(()),result=writer.write_all(&effects.replies)=>result?};
-                effects.replies.clear();
-            }
-            if let Some(seq) = effects.completed_sample_seq.take() {
-                channels.stats.lock().unwrap().completion(
-                    seq,
-                    effects.input_completions,
-                    effects.keepalives,
-                );
-            }
-            effects.input_completions = 0;
-            effects.keepalives = 0;
-            for output in effects.outputs.drain(..) {
-                channels.output(output)
-            }
-            if got_frame {
-                break;
-            }
+            effects.replies.clear();
+        }
+        if let Some((seq, completions, keepalives)) = effects.take_completion_stats() {
+            channels
+                .stats
+                .lock()
+                .unwrap()
+                .completion(seq, completions, keepalives);
+        }
+        for output in effects.outputs.drain(..) {
+            channels.output(output)
         }
     }
 }

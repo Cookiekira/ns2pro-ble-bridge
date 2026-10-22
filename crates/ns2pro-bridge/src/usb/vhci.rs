@@ -4,56 +4,11 @@ use std::{
     fs, io,
     os::fd::AsRawFd,
     path::{Path, PathBuf},
-    pin::Pin,
-    task::{Context, Poll},
 };
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::{TcpListener, TcpStream, UnixStream},
-};
+use tokio::net::{TcpListener, TcpStream, UnixStream};
+use tokio_util::either::Either;
 const ROOT: &str = "/sys/devices/platform/vhci_hcd.0";
 const DEVICE_ID: u32 = 0x10001;
-#[derive(Debug)]
-pub enum VhciStream {
-    Unix(UnixStream),
-    Tcp(TcpStream),
-}
-impl AsyncRead for VhciStream {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            Self::Unix(s) => Pin::new(s).poll_read(cx, buf),
-            Self::Tcp(s) => Pin::new(s).poll_read(cx, buf),
-        }
-    }
-}
-impl AsyncWrite for VhciStream {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        match self.get_mut() {
-            Self::Unix(s) => Pin::new(s).poll_write(cx, buf),
-            Self::Tcp(s) => Pin::new(s).poll_write(cx, buf),
-        }
-    }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            Self::Unix(s) => Pin::new(s).poll_flush(cx),
-            Self::Tcp(s) => Pin::new(s).poll_flush(cx),
-        }
-    }
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            Self::Unix(s) => Pin::new(s).poll_shutdown(cx),
-            Self::Tcp(s) => Pin::new(s).poll_shutdown(cx),
-        }
-    }
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Port {
     port: u32,
@@ -131,10 +86,10 @@ pub struct Attached {
     attached: bool,
 }
 impl Attached {
-    pub async fn attach() -> Result<(Self, VhciStream), AttachError> {
+    pub async fn attach() -> Result<(Self, Either<UnixStream, TcpStream>), AttachError> {
         Self::attach_at(Path::new(ROOT)).await
     }
-    async fn attach_at(root: &Path) -> Result<(Self, VhciStream), AttachError> {
+    async fn attach_at(root: &Path) -> Result<(Self, Either<UnixStream, TcpStream>), AttachError> {
         let candidates = free_ports(root)?;
         if candidates.is_empty() {
             return Err(AttachError::Platform(
@@ -145,17 +100,10 @@ impl Attached {
             let (kernel, bridge) = std::os::unix::net::UnixStream::pair()?;
             bridge.set_nonblocking(true)?;
             let fd = kernel.as_raw_fd();
-            match write_attach(root, port.port, fd) {
+            let (fd, stream) = match write_attach(root, port.port, fd) {
                 Ok(()) => {
-                    let lease = Self {
-                        root: root.into(),
-                        status,
-                        port: port.port,
-                        fd: fd as _,
-                        attached: true,
-                    };
                     drop(kernel);
-                    return Ok((lease, VhciStream::Unix(UnixStream::from_std(bridge)?)));
+                    (fd, Either::Left(bridge))
                 }
                 Err(e) if e.raw_os_error() == Some(libc::EBUSY) => continue,
                 Err(e) if fallback_error(&e) => {
@@ -175,18 +123,23 @@ impl Attached {
                         }
                         return Err(attach_hint(e));
                     }
-                    let lease = Self {
-                        root: root.into(),
-                        status,
-                        port: port.port,
-                        fd: fd as _,
-                        attached: true,
-                    };
                     drop(client);
-                    return Ok((lease, VhciStream::Tcp(server)));
+                    (fd, Either::Right(server))
                 }
                 Err(e) => return Err(attach_hint(e)),
-            }
+            };
+            let lease = Self {
+                root: root.into(),
+                status,
+                port: port.port,
+                fd: fd as _,
+                attached: true,
+            };
+            let stream = match stream {
+                Either::Left(bridge) => Either::Left(UnixStream::from_std(bridge)?),
+                Either::Right(server) => Either::Right(server),
+            };
+            return Ok((lease, stream));
         }
         Err(AttachError::Platform(
             "vhci ports were claimed concurrently; retry attach".into(),

@@ -12,6 +12,15 @@ pub struct Effects {
     pub keepalives: u64,
     pub completed_sample_seq: Option<u64>,
 }
+impl Effects {
+    pub fn take_completion_stats(&mut self) -> Option<(u64, u64, u64)> {
+        let completions = std::mem::take(&mut self.input_completions);
+        let keepalives = std::mem::take(&mut self.keepalives);
+        self.completed_sample_seq
+            .take()
+            .map(|seq| (seq, completions, keepalives))
+    }
+}
 #[derive(Debug)]
 pub struct UrbEngine {
     pub device: Ns2ProDevice,
