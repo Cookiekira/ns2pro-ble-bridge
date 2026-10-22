@@ -278,3 +278,214 @@ async fn pairing_reject_and_calibration_fallback() {
             .is_err()
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn rumble_leading_edge_latest_value_twenty_ms_and_setup_output_replay() {
+    use ns2pro_usb::Output;
+    let link = Fake::default();
+    let channels = Channels::default();
+    let controller = Controller::new(&link).await.unwrap();
+    controller.initialize(&channels, 7).await.unwrap();
+    // Host outputs arriving after initialize but before output loops must survive.
+    channels.output(Output::PlayerLeds(9));
+    channels.output(Output::Rumble {
+        left: [1; 16],
+        right: [2; 16],
+    });
+    let cancel = CancellationToken::new();
+    let driver = async {
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        let vibrations = || {
+            link.writes()
+                .into_iter()
+                .filter(|(c, _)| *c == Characteristic::Vibration)
+                .map(|(_, p)| p)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            vibrations().len(),
+            1,
+            "first fresh rumble must send without timer advancement"
+        );
+        assert_eq!(vibrations()[0][1], 1);
+        assert!(
+            link.writes()
+                .iter()
+                .any(|(c, p)| *c == Characteristic::Command && *p == command::set_player_leds(9))
+        );
+        channels.output(Output::Rumble {
+            left: [3; 16],
+            right: [3; 16],
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(19)).await;
+        channels.output(Output::Rumble {
+            left: [4; 16],
+            right: [4; 16],
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(vibrations().len(), 1);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(vibrations().len(), 2);
+        assert_eq!(vibrations()[1][1], 4, "superseded rumble must not queue");
+        cancel.cancel();
+    };
+    let (_, result) = tokio::join!(driver, controller.run(&channels, &cancel));
+    assert!(result.is_err());
+}
+
+#[derive(Default)]
+struct FakeBluetooth {
+    link: Fake,
+    queries: std::sync::atomic::AtomicUsize,
+    scans: Mutex<Vec<Option<Address>>>,
+    fail: std::sync::atomic::AtomicBool,
+}
+impl Bluetooth for FakeBluetooth {
+    type Link = Fake;
+    async fn scan(&self, target: Option<Address>) -> Result<Discovered, BleError> {
+        self.scans.lock().unwrap().push(target);
+        if self.fail.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(BleError::Platform("test discovery failure".into()));
+        }
+        Ok(Discovered {
+            address: target.unwrap_or(Address::new(0x123456789abc).unwrap()),
+            address_type: 2,
+        })
+    }
+    async fn connect(&self, _: &Discovered) -> Result<Fake, BleError> {
+        Ok(Fake {
+            data: self.link.data.clone(),
+            closed: CancellationToken::new(),
+        })
+    }
+    async fn adapter_address(&self) -> Result<Address, BleError> {
+        self.queries
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(Address::new(0x112233445566).unwrap())
+    }
+}
+struct TestCache(std::path::PathBuf);
+impl TestCache {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "ns2-core-session-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        Self(p)
+    }
+    fn path(&self) -> std::path::PathBuf {
+        self.0.join("cache.json")
+    }
+}
+impl Drop for TestCache {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
+    use clap::Parser;
+    use ns2pro_bridge::{
+        cache::Cache,
+        cli::Options,
+        session::{SessionState, attempt},
+    };
+    let cache = TestCache::new();
+    let mut options = Options::parse_from([
+        "bridge",
+        "--host-address",
+        "11:22:33:44:55:66",
+        "--pair-host",
+    ]);
+    options.cache_file = cache.path();
+    let bluetooth = FakeBluetooth::default();
+    let channels = Channels::default();
+    let mut state = SessionState::default();
+    for _ in 0..2 {
+        let cancel = CancellationToken::new();
+        let driver = async {
+            for _ in 0..100 {
+                if cache.path().exists() && bluetooth.link.data.lock().unwrap().input.is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert!(cache.path().exists());
+            cancel.cancel();
+        };
+        let (result, ()) = tokio::join!(
+            attempt(&bluetooth, &options, &channels, &mut state, &cancel),
+            driver
+        );
+        assert!(result.is_err());
+        assert!(state.paired);
+        assert!(state.established);
+    }
+    assert_eq!(
+        bluetooth.queries.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    let scans = bluetooth.scans.lock().unwrap();
+    assert_eq!(scans[0], None);
+    assert_eq!(scans[1], Cache(cache.path()).load().unwrap());
+    assert_eq!(
+        bluetooth
+            .link
+            .writes()
+            .iter()
+            .filter(|(c, p)| *c == Characteristic::Command && p[0] == 0x15)
+            .count(),
+        4,
+        "successful pair-host happens once across reconnects"
+    );
+    assert_eq!(bluetooth.link.data.lock().unwrap().closes, 2);
+}
+#[tokio::test(start_paused = true)]
+async fn forget_device_and_bounded_cancellable_backoff() {
+    use clap::Parser;
+    use ns2pro_bridge::{cache::Cache, cli::Options, session::supervise};
+    let cache = TestCache::new();
+    Cache(cache.path()).save(Address::new(1).unwrap()).unwrap();
+    let mut options = Options::parse_from(["bridge", "--forget-device"]);
+    options.cache_file = cache.path();
+    let bluetooth = FakeBluetooth::default();
+    bluetooth
+        .fail
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let channels = Channels::default();
+    let cancel = CancellationToken::new();
+    let driver = async {
+        tokio::task::yield_now().await;
+        assert!(!cache.path().exists());
+        assert_eq!(*bluetooth.scans.lock().unwrap(), vec![None]);
+        for (index, minimum) in [1000, 2000, 4000, 8000, 10000].into_iter().enumerate() {
+            tokio::time::advance(Duration::from_millis(minimum - 1)).await;
+            tokio::task::yield_now().await;
+            assert_eq!(
+                bluetooth.scans.lock().unwrap().len(),
+                index + 1,
+                "no early retry"
+            );
+            tokio::time::advance(Duration::from_millis(if minimum < 10000 {
+                minimum * 255 / 1000 + 2
+            } else {
+                1
+            }))
+            .await;
+            tokio::task::yield_now().await;
+            assert_eq!(bluetooth.scans.lock().unwrap().len(), index + 2);
+        }
+        cancel.cancel();
+    };
+    let (result, ()) = tokio::join!(supervise(&bluetooth, &options, &channels, &cancel), driver);
+    result.unwrap();
+}

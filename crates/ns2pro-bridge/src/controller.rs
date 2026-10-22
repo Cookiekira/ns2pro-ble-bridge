@@ -138,7 +138,6 @@ impl<'a, L: GattLink> Controller<'a, L> {
         let rumble_task = async {
             let mut next = tokio::time::Instant::now();
             loop {
-                rumble.changed().await.map_err(|_| LinkError::Closed)?;
                 let mut value = *rumble.borrow_and_update();
                 if tokio::time::Instant::now() < next {
                     tokio::time::sleep_until(next).await;
@@ -154,15 +153,16 @@ impl<'a, L: GattLink> Controller<'a, L> {
                     channels.stats.lock().unwrap().rumble_writes += 1;
                     next = tokio::time::Instant::now() + Duration::from_millis(20);
                 }
+                rumble.changed().await.map_err(|_| LinkError::Closed)?;
             }
             #[allow(unreachable_code)]
             Ok::<(), ControllerError>(())
         };
         let led_task = async {
             loop {
-                leds.changed().await.map_err(|_| LinkError::Closed)?;
                 let v = *leds.borrow_and_update();
                 self.command(&command::set_player_leds(v)).await?;
+                leds.changed().await.map_err(|_| LinkError::Closed)?;
             }
             #[allow(unreachable_code)]
             Ok::<(), ControllerError>(())

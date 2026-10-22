@@ -74,7 +74,11 @@ impl Statistics {
         let secs = self.start.elapsed().as_secs_f64().max(0.001);
         tracing::debug!(
             ble_hz = self.reports as f64 / secs,
-            interarrival_min_us = self.interval_min,
+            interarrival_min_us = if self.reports > 1 {
+                self.interval_min
+            } else {
+                0
+            },
             interarrival_max_us = self.interval_max,
             interarrival_mean_us = if self.reports > 1 {
                 self.interval_sum / (self.reports - 1) as u128
