@@ -50,7 +50,11 @@ sudo setcap cap_net_admin,cap_net_raw+ep ./target/release/ns2pro-ble-bridge
 Manual/remote clients connect to USB/IP port 3241, busid `1-1`. A client using the
 Linux `usbip` utility can use `usbip --tcp-port 3241 list -r HOST` and
 `sudo usbip --tcp-port 3241 attach -r HOST -b 1-1`; that utility is only required on
-such a client. The server is unauthenticated: bind/expose it only to trusted peers.
+such a client. The default `localhost:3241` binds only `[::1]` when `localhost`
+resolves to IPv6 only. Clients can use `-r localhost` or `-r ::1`; for IPv4 clients,
+start the bridge with `--usb-addr 127.0.0.1:3241` (local) or
+`--usb-addr 0.0.0.0:3241` (remote).
+The server is unauthenticated: bind/expose it only to trusted peers.
 Permission errors need root/CAP_NET_ADMIN; attach errors need root and `vhci-hcd`.
 A kernel-initiated virtual-device loss ends the application, while controller loss
 neutralizes input and reconnects. Ctrl+C closes the controller and detaches USB.
