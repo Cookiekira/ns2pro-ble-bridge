@@ -22,17 +22,27 @@ fn log_parameters(parameters: Parameters, stage: &str) {
     );
 }
 
+enum State {
+    Unseen,
+    Live(Option<Parameters>),
+    Foreign,
+    Stale,
+}
+
+enum Step {
+    Pending,
+    Updated(Parameters),
+    Refused(u8),
+}
+
 struct Connection {
     handle: u16,
     peer: Address,
     kind: u8,
-    connected: bool,
-    seen: bool,
-    invalidated: bool,
-    observed: Option<Parameters>,
+    state: State,
 }
 impl Connection {
-    fn observe(&mut self, p: &[u8]) -> io::Result<Option<Parameters>> {
+    fn observe(&mut self, p: &[u8]) -> io::Result<Step> {
         match parse(p)? {
             Event::Connected {
                 handle,
@@ -43,19 +53,21 @@ impl Connection {
             } if handle == self.handle => {
                 // A second event for this handle invalidates the original epoch,
                 // even if it happens to have the same address after a reconnect.
-                if self.seen {
-                    self.invalidated = true;
-                }
-                self.seen = true;
-                self.connected = role == 0
-                    && address_type <= 3
-                    && address_type % 2 == self.kind
-                    && address == self.peer.to_le_bytes();
-                self.observed = self.connected.then_some(parameters);
+                self.state = match self.state {
+                    State::Unseen
+                        if role == 0
+                            && address_type <= 3
+                            && address_type % 2 == self.kind
+                            && address == self.peer.to_le_bytes() =>
+                    {
+                        State::Live(Some(parameters))
+                    }
+                    State::Unseen => State::Foreign,
+                    _ => State::Stale,
+                };
             }
             Event::Disconnected(handle) if handle == self.handle => {
-                self.invalidated = true;
-                self.connected = false;
+                self.state = State::Stale;
             }
             Event::Updated(handle, status, parameters) if handle == self.handle => {
                 if status != 0 {
@@ -63,23 +75,46 @@ impl Connection {
                         "observed LE update failure: 0x{status:02x}"
                     )));
                 }
-                if self.connected && !self.invalidated {
-                    self.observed = parameters;
-                    return Ok(parameters);
+                if matches!(self.state, State::Live(_)) {
+                    self.state = State::Live(parameters);
+                    if let Some(parameters) = parameters {
+                        return Ok(Step::Updated(parameters));
+                    }
                 }
             }
+            Event::CommandStatus(status) if status != 0 => {
+                return Ok(Step::Refused(status));
+            }
+            // These broadcasts have no requester cookie. A success is not proof
+            // of the actual interval, nor proof this process caused the update.
             _ => {}
         }
-        Ok(None)
+        Ok(Step::Pending)
     }
     fn valid(&self, live: u16) -> io::Result<()> {
-        if !self.connected || self.invalidated || live != self.handle {
-            Err(io::Error::other(
+        match self.state {
+            State::Live(_) if live == self.handle => Ok(()),
+            _ => Err(io::Error::other(
                 "no matching current central-role ATT connection epoch",
-            ))
-        } else {
-            Ok(())
+            )),
         }
+    }
+    fn drain(&mut self, events: &Socket, p: &mut [u8]) -> io::Result<()> {
+        // Bound the drain so a noisy adapter cannot stall GATT startup indefinitely.
+        for _ in 0..256 {
+            match events.try_recv(p) {
+                Ok(0) => return Err(io::Error::other("HCI observer closed")),
+                Ok(n) => {
+                    // Queued command statuses precede our request and are ignored.
+                    self.observe(&p[..n])?;
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(io::Error::other(
+            "HCI observer backlog; skipping interval request",
+        ))
     }
 }
 
@@ -114,36 +149,14 @@ async fn request_inner(
         handle: live_handle()?,
         peer,
         kind: address_type - 1,
-        connected: false,
-        seen: false,
-        invalidated: false,
-        observed: None,
+        state: State::Unseen,
     };
     let mut p = [0; 260];
     // The observer was installed before ATT connect. Drain that connection event
     // and any already queued disconnect/reuse before the final fd snapshot.
-    // Bound the drain so a noisy adapter cannot stall GATT startup indefinitely.
-    let mut drained = false;
-    for _ in 0..256 {
-        match events.try_recv(&mut p) {
-            Ok(0) => return Err(io::Error::other("HCI observer closed")),
-            Ok(n) => {
-                connection.observe(&p[..n])?;
-            }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                drained = true;
-                break;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    if !drained {
-        return Err(io::Error::other(
-            "HCI observer backlog; skipping interval request",
-        ));
-    }
+    connection.drain(events, &mut p)?;
     connection.valid(live_handle()?)?;
-    if let Some(parameters) = connection.observed {
+    if let State::Live(Some(parameters)) = connection.state {
         log_parameters(parameters, "connection complete (before request)");
     }
     let command = LOW_LATENCY.encode_update(connection.handle);
@@ -161,19 +174,14 @@ async fn request_inner(
         if n == 0 {
             return Err(io::Error::other("HCI observer closed"));
         }
-        let event = parse(&p[..n])?;
-        if let Event::CommandStatus(status) = event {
-            // These broadcasts have no requester cookie. A success is not proof
-            // of the actual interval, nor proof this process caused the update.
-            if status != 0 {
-                return Err(io::Error::other(format!(
-                    "observed HCI 0x2013 status: 0x{status:02x}"
-                )));
-            }
+        let step = connection.observe(&p[..n])?;
+        if let Step::Refused(status) = step {
+            return Err(io::Error::other(format!(
+                "observed HCI 0x2013 status: 0x{status:02x}"
+            )));
         }
-        let updated = connection.observe(&p[..n])?;
         connection.valid(live_handle()?)?;
-        if let Some(parameters) = updated {
+        if let Step::Updated(parameters) = step {
             log_parameters(parameters, "LE connection update complete");
             if parameters.interval != LOW_LATENCY.min {
                 tracing::warn!(
@@ -233,21 +241,29 @@ mod tests {
     }
     #[tokio::test]
     async fn stale_wrong_peer_role_type_or_handle_never_submits_a_command() {
-        for case in 0..7 {
+        // Name, identity mutation, disconnect/reuse, and current fd handle.
+        let cases = [
+            (
+                "wrong address",
+                Some((9, connected(peer(), 0, 0)[9] ^ 1)),
+                false,
+                Some(0x201),
+            ),
+            ("peripheral role", Some((7, 1)), false, Some(0x201)),
+            ("random address type", Some((8, 1)), false, Some(0x201)),
+            ("wrong handle", Some((5, 2)), false, Some(0x201)),
+            ("disconnect then reuse", None, true, Some(0x201)),
+            ("current fd handle changed", None, false, Some(0x202)),
+            ("getsockopt permission error", None, false, None),
+        ];
+        for (case, mutation, reuse, live) in cases {
             let (events, controller) = super::super::socket::pair();
             let mut event = connected(peer(), 0, 0);
-            match case {
-                0 => event[9] ^= 1, // wrong address
-                1 => event[7] = 1,  // peripheral role
-                2 => event[8] = 1,  // random, not public
-                3 => event[5] = 2,  // wrong handle
-                4 => {}             // disconnect then reuse for the same address
-                5 => {}             // current fd has a new handle at final check
-                6 => {}             // getsockopt permission/error, independent of HCI observer
-                _ => unreachable!(),
+            if let Some((offset, value)) = mutation {
+                event[offset] = value;
             }
             controller.send(&event).await.unwrap();
-            if case == 4 {
+            if reuse {
                 controller.send(&[4, 5, 4, 0, 1, 2, 0x13]).await.unwrap();
                 controller.send(&connected(peer(), 0, 0)).await.unwrap();
             }
@@ -255,11 +271,8 @@ mod tests {
             let result = request(&events, peer(), 1, || {
                 let count = calls.get();
                 calls.set(count + 1);
-                if case == 6 {
-                    Err(io::Error::from_raw_os_error(libc::EPERM))
-                } else {
-                    Ok(if case == 5 && count > 0 { 0x202 } else { 0x201 })
-                }
+                let live = live.ok_or_else(|| io::Error::from_raw_os_error(libc::EPERM))?;
+                Ok(if count == 0 { 0x201 } else { live })
             })
             .await;
             assert!(result.is_err(), "case {case}");
@@ -331,14 +344,14 @@ mod tests {
                 handle: 0x201,
                 peer: peer(),
                 kind: address_type % 2,
-                connected: false,
-                seen: false,
-                invalidated: false,
-                observed: None,
+                state: State::Unseen,
             };
             state.observe(&enhanced).unwrap();
             state.valid(0x201).unwrap();
-            assert_eq!(state.observed.unwrap().interval, 39);
+            assert!(matches!(
+                state.state,
+                State::Live(Some(Parameters { interval: 39, .. }))
+            ));
             for length in 0..enhanced.len() {
                 assert!(parse(&enhanced[..length]).is_err());
             }
