@@ -16,8 +16,49 @@ requiring neither Bluetooth privileges nor a fake readiness implementation. It
 failed before the fix and passed after it. Linux strict clippy, all **57** tests
 and the release rebuild passed. The previous performance and Windows results
 below remain evidence for their stated revisions, not reruns of this patch.
-Physical BLE initialization/input must be rechecked after restarting the old
-running executable; hardware acceptance is still pending.
+The user subsequently confirmed physical input works with the corrected integration
+executable, including the regular Steam client with SteamRT3 disabled after the
+32-bit libusb fix. Individual unobserved hardware checklist items remain pending.
+
+## Physical timing and split USB response follow-up
+
+The user's recorded Bluetooth trace contains a successful LE Enhanced Connection
+Complete for the cached Nintendo controller (handle 513, central role): interval
+**48.75 ms**, latency **0**, supervision timeout **420 ms**. This is an observed
+connection event, not an inference from notification frequency. It establishes
+that interval for the captured session, not every later session. Subsequent live
+bridge logs show approximately 20.56 BLE reports/s, mean interarrival 48.18 ms,
+and receipt-to-completed-USB-write p99 approximately 24–28 microseconds. The
+wireless report cadence dominates the perceptible delay; debug logging level does
+not turn a release executable into a debug build. The 0.5 ms bridge-only processing
+target must not be presented as an end-to-end wireless latency result.
+
+The SDL probes also exposed a distinct USB response fragmentation bug. SDL reads
+an 80-byte flash response as separate 64- and 16-byte transfers; the old engine
+truncated each response to the first request and discarded its unread tail.
+`d61bb37` retains that tail ahead of later replies for both immediate and pending
+IN requests, and handles zero-length reads without consuming data. A session-level
+USB/IP peer test failed before the fix (the next command's reply replaced the
+missing tail) and passed after it. Linux strict clippy, **58 tests**, and release
+build passed. The full workspace also passed all 58 tests on the installed Rust
+1.95 stable toolchain, in addition to the development nightly. Windows evidence
+for this exact code is in the platform record:
+**54 tests under Wine**, strict target clippy and MSVC release linking passed.
+Real SDL flash-read warnings must be rechecked after restarting into this build;
+no real-hardware disappearance of those warnings is claimed yet.
+
+The remaining 7.5 ms request is not implemented. Read-only kernel research found
+standard HCI LE Connection Update (`0x2013`) as a non-persistent, per-live-ACL
+alternative to LOAD_CONN_PARAM. It can avoid saved preference mutation, but the
+current UAPI takes a numeric HCI handle, not a socket or connection generation.
+Live ATT L2CAP_CONNINFO plus identity/epoch checks permit a best-effort path;
+they cannot atomically prevent a disconnect-and-handle-reuse race, and other
+channels on the same ACL share its interval. Raw submission needs CAP_NET_RAW.
+No such command was sent and no extra capabilities installed. Do not call the
+candidate a strict ownership-safe implementation or mark #18 complete. See the
+[Linux L2CAP socket interface](https://github.com/torvalds/linux/blob/7be4bc52fd9e0e55dc9a2e0232b89427d2c4b614/net/bluetooth/l2cap_sock.c),
+[standard update construction](https://github.com/torvalds/linux/blob/7be4bc52fd9e0e55dc9a2e0232b89427d2c4b614/net/bluetooth/hci_sync.c),
+and [completion handling](https://github.com/torvalds/linux/blob/7be4bc52fd9e0e55dc9a2e0232b89427d2c4b614/net/bluetooth/hci_event.c).
 
 ## Original integrated delivery record
 
@@ -34,7 +75,7 @@ build. Both tested SDL libraries report the same revision
 legacy process's library search path, the 32-bit probe reports `Couldn't load
 libusb` and exposes only generic evdev (4 axes, 21 buttons). The bundled old
 32-bit libusb loads but lacks `libusb_interrupt_event_handler`, required by this
-SDL revision's libusb loader. The system has 64-bit libusb but no lib32-libusb.
+SDL revision's libusb loader. At diagnosis time, the system had 64-bit libusb but no lib32-libusb.
 
 A controlled test extracted the configured repository's `lib32-libusb 1.0.30-1`
 package into a temporary directory and prepended only its library directory for
@@ -42,9 +83,12 @@ the same 32-bit SDL probe. It then selected
 `SDL_JOYSTICK_HIDAPI_SWITCH2 (ENABLED)` (6 axes, 15 buttons), matching the 64-bit
 probe. USB flash-read timeout warnings were present in both native-driver probes
 and are not claimed resolved by this library fix. No Steam libraries or udev
-rules were overwritten. Installing the system package and restarting the full
-legacy Steam client remains an interactive verification step; this proves the
-library-loading cause and driver selection, not complete Steam gameplay acceptance.
+rules were overwritten. The user installed the package and restarted the legacy
+Steam client; process maps confirmed `/usr/lib32/libusb-1.0.so.0.6.0` and controller
+logs confirmed HIDAPI. Initial retesting still used an older platform-worktree
+bridge build. Launching the fixed integration binary restored physical input,
+confirmed by the user with SteamRT3 disabled. This distinguishes the two independent
+failures: the legacy client dependency and the outdated ATT connection implementation.
 
 The Rust replacement is integrated locally on `feat/rust-rewrite`, beginning at
 seed `aba0ad7`. Authority remains GitHub issues #15–#20. This record does not mark
@@ -148,11 +192,11 @@ target in this synthetic reference environment. This is not hardware latency acc
 
 | Criterion | Actual status / required next verification |
 | --- | --- |
-| Linux native scan | hci0 enumerated (`EC:91:61:88:1C:C4`, USB `0e8d:0616` Wireless_Device); START_DISCOVERY rejected status `0x14` Permission Denied, exit 1; uid 1000, effective capabilities 0. No successful scan/controller connection claimed. |
-| vhci auto-attach / fallback | `/sys/devices/platform/vhci_hcd.0` unavailable. AF_UNIX acceptance, TCP-fd fallback on kernel rejection, detach and fatal host loss require privileged hardware runs. |
-| Controller/USB hardware | Pairing, enumeration/SDL, physical input/IMU/power/rumble/LEDs/reconnect and bluetoothd coexistence remain unverified; adapter/controller firmware unknown. Follow [checklist](linux-hardware-checklist.md). |
+| Original unprivileged Linux scan | hci0 enumerated (`EC:91:61:88:1C:C4`, USB `0e8d:0616` Wireless_Device); START_DISCOVERY rejected status `0x14` Permission Denied, exit 1; uid 1000, effective capabilities 0. No successful scan/controller connection claimed. |
+| vhci auto-attach / fallback | Later privileged user runs successfully attached and enumerated the virtual device. No AF_UNIX rejection/fallback warning was observed. The fallback and fatal host-loss paths still require separate hardware acceptance. |
+| Controller/USB hardware | User confirmed working physical input in SteamRT3 and regular 32-bit Steam after both fixes; cached controller and virtual USB enumeration are observed. Per-feature motion/power/rumble/LED/reconnect/coexistence checks and firmware versions were not individually recorded. Follow [checklist](linux-hardware-checklist.md). |
 | Standard 7.5 ms preference | **Unmet software/platform criterion.** Codec encodes 6/6, latency 0, timeout 200, but no production request is sent: examined mgmt LOAD_CONN_PARAM may clear other devices' disabled preferences and provides no read/compare/restore API. Backend logs optimization unavailable and connects using system-allowed parameters. An ownership-safe mechanism must be established before claiming #18 completion. Kernel evidence is in the Linux record. |
-| Verified 5 ms / actual interval | No verified adapter/firmware path. No invalid generic interval 4 or unverified vendor command sent. Observed Linux interval and real wireless latency unknown. |
+| Verified 5 ms / actual interval | No verified 5 ms path. Captured Nintendo connection interval is 48.75 ms; report cadence approximately 20.56 Hz. No invalid interval 4/vendor command sent. True end-to-end game latency remains unmeasured. |
 | Motion timestamp semantics | Controller timestamp offset not verified; implementation retains monotonic notification-receipt microseconds. Keepalive preserves that timestamp. |
 | Windows native CI / hardware | MSVC cross-build plus tests executed under Wine passed. Actual Windows hosted CI has not run locally; physical WinRT/usbip-win2 kernel-driver and timing acceptance not claimed. |
 | Linux arm64 | Native ARM release runner configured, but no ARM build/hardware acceptance performed in this x64 session. |

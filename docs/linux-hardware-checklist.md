@@ -2,8 +2,9 @@
 
 Record revision, distribution/kernel, architecture, adapter model/firmware,
 controller firmware, privileges and whether bluetoothd is running for every run.
-The implementation session has not completed this checklist; see
-[rust-linux-implementation.md](rust-linux-implementation.md) for exact evidence.
+User-operated Linux x64 runs now confirm USB enumeration and physical Steam input,
+including regular Steam with SteamRT3 disabled. Per-feature items below remain
+unchecked unless individually evidenced; see [integration evidence](rust-integration-validation.md).
 
 ## Prerequisites
 
@@ -33,12 +34,12 @@ The implementation session has not completed this checklist; see
 
 ## Timing and architecture
 
-- [ ] Capture actual LE connection interval through native events/HCI evidence.
+- [x] Captured Nintendo LE connection event: 48.75 ms, latency 0, supervision 420 ms. Recheck after any connection-parameter change.
 - [ ] Reconcile Linux's ownership-safe preference limitation before claiming standard 7.5 ms request acceptance.
 - [ ] Rejection of optimization allows system-parameter connection to continue.
 - [ ] Verified 5 ms hardware path: currently unavailable; do not send generic interval 4.
 - [ ] Verify controller IMU timestamp semantics or retain monotonic receipt fallback.
-- [ ] Record BLE arrival rate/jitter and receipt-to-USB-write p50/p99 separately from interval.
+- [x] Recorded about 20.56 reports/s, mean interarrival 48.18 ms, bridge p99 about 24–28 µs; radio/game end-to-end latency is separate.
 - [ ] Linux x64 hardware acceptance; Linux arm64 native build and hardware acceptance.
 
 Windows delivery has separate build/test evidence; no Windows hardware claim is made.

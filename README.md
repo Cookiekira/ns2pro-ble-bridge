@@ -139,10 +139,13 @@ or kernel latency. Reproduce with:
 cargo test --release -p ns2pro-bridge --test linux_latency -- --ignored --nocapture --test-threads=1
 ```
 
-Linux hardware acceptance is **not complete**: this session could enumerate hci0,
-but lacked CAP_NET_ADMIN for discovery and had no vhci sysfs host. No controller
-firmware, attach/enumeration/SDL, reconnect, output or actual interval acceptance
-is claimed. Follow the [hardware checklist](docs/linux-hardware-checklist.md),
+User-operated Linux x64 runs confirm native BLE input, vhci USB enumeration and
+Steam input with SteamRT3 disabled after the legacy client dependency fix above.
+Run the executable built in the same checkout; startup logs now identify its
+absolute path, so stale binaries in a different worktree can be distinguished.
+A captured connection used a 48.75 ms BLE interval, consistent with roughly 20 Hz
+input and perceptible wireless delay despite fast bridge processing. Firmware,
+per-feature output/reconnect/coexistence, and ARM acceptance remain incomplete. Follow the [hardware checklist](docs/linux-hardware-checklist.md),
 [Linux evidence](docs/rust-linux-implementation.md), and
 [integration record](docs/rust-integration-validation.md).
 
