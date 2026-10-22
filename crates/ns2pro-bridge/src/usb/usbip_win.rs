@@ -225,6 +225,9 @@ impl Attached {
         mut address: SocketAddr,
         cancel: CancellationToken,
     ) -> Result<Self, AttachError> {
+        if cancel.is_cancelled() {
+            return Err(AttachError::Cancelled);
+        }
         // A wildcard listener accepts loopback but cannot be passed to getaddrinfo
         // as the destination of the driver's TCP connection.
         if address.ip().is_unspecified() {
@@ -238,9 +241,18 @@ impl Attached {
         let worker_stop = stop.clone();
         let (ready_tx, ready_rx) = oneshot::channel();
         let worker = tokio::task::spawn_blocking(move || {
+            if worker_stop.is_cancelled() {
+                let _ = ready_tx.send(Err(AttachError::Cancelled));
+                return Ok(());
+            }
             let handle = match open_driver() {
                 Ok(handle) => handle,
                 Err(error) => {
+                    let error = if worker_stop.is_cancelled() {
+                        AttachError::Cancelled
+                    } else {
+                        error
+                    };
                     let _ = ready_tx.send(Err(error));
                     return Ok(());
                 }
@@ -289,8 +301,13 @@ impl Attached {
             .await
             .map_err(|error| platform(format!("usbip-win2 worker ended: {error}")))?;
         if let Err(error) = result {
+            let cancelled = attached.stop.is_cancelled();
             let _ = attached.detach().await;
-            return Err(error);
+            return Err(if cancelled {
+                AttachError::Cancelled
+            } else {
+                error
+            });
         }
         if attached.stop.is_cancelled() {
             attached.detach().await?;
@@ -342,6 +359,16 @@ mod tests {
         drop(event);
         let error = unsafe { GetHandleInformation(handle, &mut flags) }.unwrap_err();
         assert_eq!(error.code(), ERROR_INVALID_HANDLE.to_hresult());
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_attach_never_probes_the_driver() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        // Port zero would otherwise fail argument validation; cancellation wins
+        // before any encoding, SetupDi discovery or device open is attempted.
+        let result = Attached::attach("127.0.0.1:0".parse().unwrap(), cancel).await;
+        assert!(matches!(result, Err(AttachError::Cancelled)));
     }
 
     #[tokio::test]
