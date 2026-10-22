@@ -38,6 +38,24 @@ fn parse_flags(s: &str) -> Result<u8, String> {
     }
     .map_err(|e| e.to_string())
 }
+
+fn parse_usb_addr(s: &str) -> Result<String, String> {
+    use std::net::ToSocketAddrs;
+    s.to_socket_addrs()
+        .ok()
+        .and_then(|mut addresses| addresses.next())
+        .map(|_| s.to_owned())
+        .ok_or_else(|| "expected host:port such as localhost:3241".into())
+}
+fn parse_level(s: &str) -> Result<String, String> {
+    let value = s.to_ascii_lowercase();
+    if ["trace", "debug", "info", "warn", "error", "off"].contains(&value.as_str()) {
+        Ok(value)
+    } else {
+        Err("expected trace, debug, info, warn or error".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,22 +72,5 @@ mod tests {
             255
         );
         assert!(Options::try_parse_from(["bridge", "--verify-native-library"]).is_err());
-    }
-}
-
-fn parse_usb_addr(s: &str) -> Result<String, String> {
-    use std::net::ToSocketAddrs;
-    s.to_socket_addrs()
-        .ok()
-        .and_then(|mut addresses| addresses.next())
-        .map(|_| s.to_owned())
-        .ok_or_else(|| "expected host:port such as localhost:3241".into())
-}
-fn parse_level(s: &str) -> Result<String, String> {
-    let value = s.to_ascii_lowercase();
-    if ["trace", "debug", "info", "warn", "error", "off"].contains(&value.as_str()) {
-        Ok(value)
-    } else {
-        Err("expected trace, debug, info, warn or error".into())
     }
 }
