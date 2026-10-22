@@ -8,7 +8,12 @@ use tokio::io::unix::AsyncFd;
 const BTPROTO_L2CAP: i32 = 0;
 const BTPROTO_HCI: i32 = 1;
 const HCI_DEV_NONE: u16 = 0xffff;
+const HCI_CHANNEL_RAW: u16 = 0;
 const HCI_CHANNEL_CONTROL: u16 = 3;
+const SOL_HCI: i32 = 0;
+const HCI_FILTER: i32 = 2;
+const SOL_L2CAP: i32 = 6;
+const L2CAP_CONNINFO: i32 = 2;
 const SOL_BLUETOOTH: i32 = 274;
 const BT_SECURITY: i32 = 4;
 const BT_SECURITY_LOW: u8 = 1;
@@ -50,6 +55,8 @@ fn getsockopt<T: Default>(fd: RawFd, level: i32, option: i32) -> io::Result<T> {
         unsafe { libc::getsockopt(fd, level, option, (&mut value as *mut T).cast(), &mut len) };
     if result < 0 {
         Err(io::Error::last_os_error())
+    } else if len as usize != mem::size_of::<T>() {
+        Err(io::Error::other("unexpected socket option size"))
     } else {
         Ok(value)
     }
@@ -119,42 +126,20 @@ impl Socket {
     /// Observe only this adapter; never take over HCI_CHANNEL_USER or modify
     /// controller-wide event masks. LE commands/events require CAP_NET_RAW.
     pub(super) fn hci(index: u16) -> io::Result<Self> {
-        let fd = Self::create(libc::SOCK_RAW, 1)?;
+        let fd = Self::create(libc::SOCK_RAW, BTPROTO_HCI)?;
         let filter = HciFilter {
             packet_types: 1 << 4,
             events: [(1 << 5) | (1 << 14) | (1 << 15), 1 << (0x3e - 32)],
             opcode: 0,
         };
-        // SAFETY: filter is the native Linux hci_filter ABI; this option affects
-        // only this socket. The kernel copies its fields during the syscall.
-        if unsafe {
-            libc::setsockopt(
-                fd.as_raw_fd(),
-                0,
-                2,
-                (&filter as *const HciFilter).cast(),
-                mem::size_of_val(&filter) as _,
-            )
-        } < 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        // The filter affects only this socket; the kernel copies it during the syscall.
+        setsockopt(fd.as_raw_fd(), SOL_HCI, HCI_FILTER, &filter)?;
         let address = HciAddress {
             family: libc::AF_BLUETOOTH as _,
             device: index,
-            channel: 0,
+            channel: HCI_CHANNEL_RAW,
         };
-        // SAFETY: repr(C) matches sockaddr_hci and fd is owned.
-        if unsafe {
-            libc::bind(
-                fd.as_raw_fd(),
-                (&address as *const HciAddress).cast(),
-                mem::size_of_val(&address) as _,
-            )
-        } < 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        bind(fd.as_raw_fd(), &address)?;
         Self::from_owned(fd)
     }
     /// Snapshot of the handle attached to this exact connected ATT channel.
@@ -165,7 +150,10 @@ impl Socket {
         remote: Address,
         address_type: u8,
     ) -> io::Result<u16> {
-        for (peer, expected, kind) in [(false, local, 1), (true, remote, address_type)] {
+        for (peer, expected, kind) in [
+            (false, local, BDADDR_LE_PUBLIC),
+            (true, remote, address_type),
+        ] {
             // SAFETY: sockaddr_l2 is plain integer storage, fully initialized.
             let mut address: L2capAddress = unsafe { mem::zeroed() };
             let mut len = mem::size_of_val(&address) as libc::socklen_t;
@@ -192,60 +180,24 @@ impl Socket {
                 || address.family != libc::AF_BLUETOOTH as libc::sa_family_t
                 || address.address != expected.to_le_bytes()
                 || address.address_type != kind
-                || address.cid != 4u16.to_le()
+                || address.cid != ATT_CID.to_le()
             {
                 return Err(io::Error::other("ATT endpoint identity changed"));
             }
         }
-        let mut info = L2capConnectionInfo::default();
-        let mut len = mem::size_of_val(&info) as libc::socklen_t;
-        // SAFETY: info has the native l2cap_conninfo layout (including padding).
-        if unsafe {
-            libc::getsockopt(
-                self.fd(),
-                6,
-                2,
-                (&mut info as *mut L2capConnectionInfo).cast(),
-                &mut len,
-            )
-        } < 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        if len as usize != mem::size_of_val(&info) || info.handle > 0x0eff {
+        let info: L2capConnectionInfo = getsockopt(self.fd(), SOL_L2CAP, L2CAP_CONNINFO)?;
+        if info.handle > 0x0eff {
             return Err(io::Error::other("invalid ATT connection info"));
         }
         Ok(info.handle)
     }
     /// Submit once without a userspace readiness wait after handle validation.
     pub(super) fn try_send(&self, p: &[u8]) -> io::Result<()> {
-        // SAFETY: p is readable and fd is a live nonblocking owned socket.
-        let n = unsafe { libc::send(self.fd(), p.as_ptr().cast(), p.len(), libc::MSG_NOSIGNAL) };
-        if n < 0 {
-            Err(io::Error::last_os_error())
-        } else if n as usize != p.len() {
-            Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "partial HCI command",
-            ))
-        } else {
-            Ok(())
-        }
+        check_write(send(self.fd(), p)?, p.len())
     }
     /// Drain already queued HCI events before checking the ATT identity again.
     pub(super) fn try_recv(&self, p: &mut [u8]) -> io::Result<usize> {
-        // SAFETY: p is writable and the owned socket is nonblocking.
-        let n = unsafe { libc::recv(self.fd(), p.as_mut_ptr().cast(), p.len(), libc::MSG_TRUNC) };
-        if n < 0 {
-            Err(io::Error::last_os_error())
-        } else if n as usize > p.len() {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "truncated HCI event",
-            ))
-        } else {
-            Ok(n as usize)
-        }
+        recv(self.fd(), p)
     }
     fn create(kind: i32, protocol: i32) -> io::Result<OwnedFd> {
         // SAFETY: socket returns a new descriptor, transferred exactly once into OwnedFd.
