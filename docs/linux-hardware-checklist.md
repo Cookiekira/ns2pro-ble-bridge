@@ -1,32 +1,49 @@
-# Linux hardware acceptance checklist
+# Linux hardware acceptance (pending)
 
-Record the bridge revision, Linux distribution/kernel, BlueZ version, CPU architecture,
-Bluetooth adapter, and controller firmware before starting.
+Record revision, distribution/kernel, architecture, adapter model/firmware,
+controller firmware, privileges and whether bluetoothd is running for every run.
+User-operated Linux x64 runs now confirm USB enumeration and physical Steam input,
+including regular Steam with SteamRT3 disabled. Per-feature items below remain
+unchecked unless individually evidenced; see [integration evidence](rust-integration-validation.md).
 
 ## Prerequisites
 
-- [ ] BlueZ is running and the adapter is powered.
-- [ ] The `usbip` command is installed.
-- [ ] `vhci-hcd` is loaded (`lsmod | rg vhci_hcd`).
-- [ ] The bridge can auto-attach with the chosen privileges, or `--no-auto-attach` is used.
-- [ ] No other process has an active connection to the controller.
+- [ ] Root for auto-attach, or CAP_NET_ADMIN for `--no-auto-attach` Bluetooth; add CAP_NET_RAW for the live interval request.
+- [ ] A usable LE adapter; `vhci-hcd` loaded for local auto-attach.
+- [ ] No other active controller session. Bluetoothd is optional, not a dependency.
 
-## Controller and virtual USB
+## Native and USB path
 
-- [ ] First pairing discovers the controller and completes host pairing.
-- [ ] A later run reconnects using the cached controller without pairing mode.
-- [ ] Buttons, both sticks, and IMU motion appear on the virtual NS2Pro device.
-- [ ] Rumble from the virtual device is reproduced by the physical controller.
-- [ ] Player LED changes from the virtual device reach the physical controller.
-- [ ] Powering off or moving the controller out of range ends the session and reconnects after return.
-- [ ] `--forget-device` clears the cache and the next run returns to discovery.
-- [ ] `--pair-host` repeats pairing for a cached controller.
-- [ ] `--device-address` connects to the specified controller.
-- [ ] `--host-address` overrides the BlueZ adapter address used for pairing.
-- [ ] `usbip list -r localhost` shows the export and the attached device is visible to `lsusb`.
-- [ ] `--no-auto-attach` permits a manual or remote USB/IP attach.
+- [ ] Hidden `--bt-smoke-test` enumerates adapters and scans for 500 ms.
+- [ ] Discovery identifies Nintendo advertisements and correct LE address type.
+- [ ] Pairing initializes a controller; subsequent cached attempts require a fresh advertisement.
+- [ ] AF_UNIX socketpair attaches through vhci sysfs; record exact kernel result.
+- [ ] If rejected, connected local TCP-fd fallback attaches; no usbip executable invoked.
+- [ ] Full Speed `057e:2069` enumerates, both HID/bulk interfaces work, SDL/game initializes.
+- [ ] Check all buttons, both calibrated stick ranges and battery/charging values individually.
+- [x] User confirms gyroscope/motion control works in the requested game or Steam configuration on the tested Linux setup. Sensor timestamp semantics and quantitative accuracy remain unverified.
+- [x] User confirms Steam controller-test Rumble works on the tested Linux setup.
+- [ ] Verify sustained/rapid rumble updates and latest-value 20 ms throttle on hardware.
+- [x] User confirms player indicators are steady after connection and restore after reconnect on the tested Linux setup. Arbitrary host-selected LED patterns were not separately checked.
+- [ ] Loss publishes neutral buttons/sticks/motion, then reconnects after return.
+- [ ] Old rumble cannot replay; pending bulk/IN/UNLINK behave correctly.
+- [ ] `--forget-device`, explicit address, host override and pair-host-once behave correctly.
+- [ ] Failed cache setup invalidates cache; cancellation preserves cache.
+- [ ] Ctrl+C during scan/setup/steady use releases controller and detaches owned USB port.
+- [ ] Kernel-initiated USB device loss is fatal rather than silently reattaching.
+- [ ] Manual/remote TCP attachment works at configured port, busid `1-1`.
+- [ ] Run with bluetoothd and separately without it; record coexistence effects.
 
-## Architectures
+## Timing and architecture
 
-- [ ] The `linux-x64` release artifact completes the checklist on x64 hardware.
-- [ ] The `linux-arm64` release artifact completes the checklist on ARM64 hardware.
+- [x] Captured Nintendo LE connection event: 48.75 ms, latency 0, supervision 420 ms. Recheck after any connection-parameter change.
+- [x] User-operated integration release eb73be3: startup observer reports 48.75 ms before request and a successful LE update to 7.5 ms, latency 0, supervision 2000 ms; controller initialization succeeds. User confirms noticeable Steam input delay disappeared. Evidence is the supplied runtime-log screenshot, not an independently saved HCI packet capture.
+- [x] User confirms controller power-off/reconnect works and still negotiates 7.5 ms on the tested adapter. This is user-reported acceptance; no additional trace or soak-test duration was supplied.
+- [ ] Save a fresh HCI packet capture for the 7.5 ms run, including outgoing 0x2013 and matching completion.
+- [ ] Rejection of optimization allows system-parameter connection to continue.
+- [ ] Verified 5 ms hardware path: currently unavailable; do not send generic interval 4.
+- [ ] Verify controller IMU timestamp semantics or retain monotonic receipt fallback.
+- [x] Recorded about 20.56 reports/s, mean interarrival 48.18 ms, bridge p99 about 24–28 µs; radio/game end-to-end latency is separate.
+- [ ] Linux x64 hardware acceptance; Linux arm64 native build and hardware acceptance.
+
+Windows delivery has separate build/test evidence; no Windows hardware claim is made.

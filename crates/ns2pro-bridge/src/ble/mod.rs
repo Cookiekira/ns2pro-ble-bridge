@@ -1,0 +1,65 @@
+//! Native Bluetooth boundary. Futures deliberately need not be Send.
+use ns2pro_proto::{Address, gatt::Characteristic};
+use tokio_util::sync::CancellationToken;
+
+pub type NotificationSink = Box<dyn FnMut(&[u8]) + Send + 'static>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Discovered {
+    pub address: Address,
+    /// Linux mgmt address type: 1 = LE public, 2 = LE random.
+    pub address_type: u8,
+}
+#[derive(Debug, thiserror::Error)]
+pub enum BleError {
+    #[error("Bluetooth I/O: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Bluetooth: {0}")]
+    Platform(String),
+    #[error("Bluetooth discovery timed out")]
+    Timeout,
+    #[error("Bluetooth operation cancelled")]
+    Cancelled,
+}
+impl From<ns2pro_proto::mgmt::Malformed> for BleError {
+    fn from(error: ns2pro_proto::mgmt::Malformed) -> Self {
+        Self::Platform(error.to_string())
+    }
+}
+#[derive(Debug, thiserror::Error)]
+pub enum LinkError {
+    #[error("GATT I/O: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("GATT: {0}")]
+    Platform(String),
+    #[error("GATT command timed out")]
+    Timeout,
+    #[error("GATT link closed")]
+    Closed,
+}
+pub trait Bluetooth {
+    type Link: GattLink;
+    /// Wait for a fresh matching advertisement, including for a known target.
+    fn scan(&self, target: Option<Address>) -> impl Future<Output = Result<Discovered, BleError>>;
+    fn connect(&self, target: &Discovered) -> impl Future<Output = Result<Self::Link, BleError>>;
+    fn adapter_address(&self) -> impl Future<Output = Result<Address, BleError>>;
+}
+pub trait GattLink: 'static {
+    fn write(
+        &self,
+        characteristic: Characteristic,
+        data: &[u8],
+    ) -> impl Future<Output = Result<(), LinkError>>;
+    fn subscribe(
+        &self,
+        characteristic: Characteristic,
+        sink: NotificationSink,
+    ) -> impl Future<Output = Result<(), LinkError>>;
+    fn closed(&self) -> CancellationToken;
+    /// Idempotently release the link, including partially initialized sessions.
+    fn close(&self) -> impl Future<Output = ()>;
+}
+
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(windows)]
+pub mod windows;

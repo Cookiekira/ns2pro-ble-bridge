@@ -1,0 +1,15 @@
+[package]
+name = "ns2pro-proto"
+description = "Pure Switch 2 Pro Controller BLE protocol: reports, commands, pairing and ATT codecs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+aes.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

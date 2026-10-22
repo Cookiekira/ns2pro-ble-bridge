@@ -1,0 +1,54 @@
+[package]
+name = "ns2pro-bridge"
+description = "Bridge a Switch 2 Pro Controller over BLE to a virtual USB NS2Pro device"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ns2pro-ble-bridge"
+path = "src/main.rs"
+
+[dependencies]
+ns2pro-proto.workspace = true
+ns2pro-usb.workspace = true
+clap.workspace = true
+dirs.workspace = true
+futures.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+  "Devices_Bluetooth",
+  "Devices_Bluetooth_Advertisement",
+  "Devices_Bluetooth_GenericAttributeProfile",
+  "Devices_Enumeration",
+  "Win32_System_WinRT",
+  "Win32_System_Threading",
+  "Foundation",
+  "Foundation_Collections",
+  "Storage_Streams",
+  "Win32_Devices_DeviceAndDriverInstallation",
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true
