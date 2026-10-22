@@ -280,6 +280,62 @@ async fn pairing_reject_and_calibration_fallback() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn flash_reply_survives_split_bulk_reads_without_consuming_the_next_reply() {
+    // SDL reads the 80-byte flash reply as separate 64- and 16-byte transfers.
+    // Cover both an already-pending IN and an IN arriving after command output.
+    for pending_first in [false, true] {
+        let (mut peer, stream) = tokio::io::duplex(4096);
+        let cancel = CancellationToken::new();
+        let host = async {
+            send(&mut peer, urb(0, 1, 2, 0), &[]).await;
+            assert_eq!(reply(&mut peer).await, (0, 0, vec![]));
+            let address = 0x13080u32;
+            let mut payload = [0; 8];
+            payload[4..].copy_from_slice(&address.to_le_bytes());
+            let request = command::command(2, 1, &payload);
+            let mut expected = vec![2, 1, 1, 1, 0x10, 0x78, 0, 0, 0x40, 0, 0, 0];
+            expected.extend(address.to_le_bytes());
+            expected.extend(ns2pro_usb::device::flash_block(address));
+            if pending_first {
+                send(&mut peer, urb(1, 1, 2, 64), &[]).await;
+            }
+            send(&mut peer, urb(2, 0, 2, request.len()), &request).await;
+            assert_eq!(reply(&mut peer).await.0, 2);
+            if !pending_first {
+                send(&mut peer, urb(1, 1, 2, 64), &[]).await;
+            }
+            let first = reply(&mut peer).await;
+            assert_eq!(first, (1, 0, expected[..64].to_vec()));
+
+            // Queue another command to distinguish lost response tails from an
+            // unrelated response, without relying on wall-clock timeouts.
+            let next = command::command(7, 1, &[]);
+            send(&mut peer, urb(3, 0, 2, next.len()), &next).await;
+            assert_eq!(reply(&mut peer).await.0, 3);
+            send(&mut peer, urb(6, 1, 2, 0), &[]).await;
+            assert_eq!(reply(&mut peer).await, (6, 0, vec![]));
+            send(&mut peer, urb(4, 1, 2, 16), &[]).await;
+            assert_eq!(
+                reply(&mut peer).await,
+                (4, 0, expected[64..].to_vec()),
+                "short host reads must preserve the remaining flash bytes"
+            );
+            send(&mut peer, urb(5, 1, 2, 64), &[]).await;
+            assert_eq!(
+                reply(&mut peer).await,
+                (5, 0, vec![7, 1, 1, 1, 0x10, 0x78, 0, 0])
+            );
+            cancel.cancel();
+        };
+        let (_, result) = tokio::join!(
+            host,
+            serve_urbs(stream, Channels::default(), cancel.clone())
+        );
+        result.unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn rumble_leading_edge_latest_value_twenty_ms_and_setup_output_replay() {
     use ns2pro_usb::Output;
     let link = Fake::default();

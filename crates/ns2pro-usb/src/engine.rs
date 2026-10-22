@@ -58,7 +58,7 @@ impl UrbEngine {
                 return;
             }
             (1, 2) => {
-                if let Some(p) = self.device.pop_bulk_in() {
+                if let Some(p) = self.device.read_bulk_in(u.length) {
                     payload = p
                 } else {
                     if self.pending.len() >= 256 {
@@ -139,9 +139,8 @@ impl UrbEngine {
                 let n = u.length.min(p.len());
                 reply_into(&mut e.replies, u, 0, &p[..n], n);
             } else if u.ep == 2 {
-                if let Some(mut p) = self.device.pop_bulk_in() {
+                if let Some(p) = self.device.read_bulk_in(u.length) {
                     self.pending.remove(i);
-                    p.truncate(u.length);
                     reply_into(&mut e.replies, u, 0, &p, p.len());
                 } else {
                     i += 1;

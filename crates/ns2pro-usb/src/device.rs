@@ -163,7 +163,19 @@ impl Ns2ProDevice {
         event
     }
     pub fn pop_bulk_in(&mut self) -> Option<Vec<u8>> {
-        self.bulk.pop_front()
+        self.read_bulk_in(usize::MAX)
+    }
+    /// Complete at most one host transfer while retaining an unread response tail.
+    pub fn read_bulk_in(&mut self, max_length: usize) -> Option<Vec<u8>> {
+        if max_length == 0 {
+            return Some(Vec::new());
+        }
+        let mut response = self.bulk.pop_front()?;
+        if response.len() > max_length {
+            let remaining = response.split_off(max_length);
+            self.bulk.push_front(remaining);
+        }
+        Some(response)
     }
     /// Err means STALL (-EPIPE). Unknown descriptors are deliberately rejected.
     pub fn control(
