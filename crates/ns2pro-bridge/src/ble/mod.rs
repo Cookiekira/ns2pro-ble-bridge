@@ -6,18 +6,6 @@ use tokio_util::sync::CancellationToken;
 const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-// Ignore unrelated addresses before parsing platform advertisement data.
-fn matches_target<E>(
-    target: Option<Address>,
-    address: Address,
-    advertisement: impl FnOnce() -> Result<bool, E>,
-) -> Result<bool, E> {
-    if target.is_some_and(|wanted| wanted != address) {
-        return Ok(false);
-    }
-    advertisement()
-}
-
 /// Connection-time evidence, independent of notification receipt timing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConnectionReport {
@@ -104,56 +92,3 @@ pub trait GattLink: 'static {
 pub mod linux;
 #[cfg(windows)]
 pub mod windows;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ns2pro_proto::advertisement;
-
-    #[test]
-    fn target_requires_supported_manufacturer_identity_even_for_known_address() {
-        let address = Address::new(1).unwrap();
-        let other = Address::new(2).unwrap();
-        let data = [0, 0, 0, 0x7e, 5, 0x69, 0x20, 0, 0, 0];
-        for target in [None, Some(address), Some(other)] {
-            for mode in [0x00, 0x81, 0x42] {
-                for company in [0x0553, 0] {
-                    let mut data = data;
-                    data[9] = mode;
-                    let result = matches_target(target, address, || {
-                        Ok::<_, ()>(advertisement::parse(company, &data).is_some())
-                    });
-                    assert_eq!(
-                        result,
-                        Ok(target != Some(other) && company == 0x0553 && mode != 0x42)
-                    );
-                }
-            }
-            for invalid in [&data[..9], &[0; 10][..]] {
-                assert_eq!(
-                    matches_target(target, address, || {
-                        Ok::<_, ()>(advertisement::parse(0x0553, invalid).is_some())
-                    }),
-                    Ok(false)
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn unrelated_addresses_skip_parsing_and_matching_addresses_preserve_errors() {
-        let address = Address::new(1).unwrap();
-        assert_eq!(
-            matches_target::<()>(Some(Address::new(2).unwrap()), address, || {
-                panic!("unrelated advertisement must not be parsed")
-            }),
-            Ok(false)
-        );
-        for target in [None, Some(address)] {
-            assert_eq!(
-                matches_target(target, address, || Err("malformed advertisement")),
-                Err("malformed advertisement")
-            );
-        }
-    }
-}
