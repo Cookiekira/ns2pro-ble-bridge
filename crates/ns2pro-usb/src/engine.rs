@@ -10,6 +10,7 @@ pub struct Effects {
     pub outputs: Vec<Output>,
     pub input_completions: u64,
     pub keepalives: u64,
+    pub completed_sample_seq: Option<u64>,
 }
 #[derive(Debug)]
 pub struct UrbEngine {
@@ -133,6 +134,7 @@ impl UrbEngine {
                 self.dirty = false;
                 self.last_report = now;
                 e.input_completions += 1;
+                e.completed_sample_seq = Some(self.sample.seq);
                 self.pending.remove(i);
                 let n = u.length.min(p.len());
                 reply_into(&mut e.replies, u, 0, &p[..n], n);

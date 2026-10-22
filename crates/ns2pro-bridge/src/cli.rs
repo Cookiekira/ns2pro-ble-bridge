@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Parser)]
 #[command(version, about = "Native Switch 2 Pro BLE to USB bridge")]
 pub struct Options {
-    #[arg(long, default_value = "localhost:3241")]
+    #[arg(long, default_value = "localhost:3241", value_parser=parse_usb_addr)]
     pub usb_addr: String,
     #[arg(long)]
     pub device_address: Option<Address>,
@@ -20,7 +20,7 @@ pub struct Options {
     pub no_auto_attach: bool,
     #[arg(long,default_value="0x07",value_parser=parse_flags)]
     pub feature_flags: u8,
-    #[arg(long, default_value = "info")]
+    #[arg(long, default_value = "info",value_parser=parse_level)]
     pub log_level: String,
     #[arg(long, hide = true)]
     pub bt_smoke_test: bool,
@@ -54,5 +54,22 @@ mod tests {
             255
         );
         assert!(Options::try_parse_from(["bridge", "--verify-native-library"]).is_err());
+    }
+}
+
+fn parse_usb_addr(s: &str) -> Result<String, String> {
+    use std::net::ToSocketAddrs;
+    s.to_socket_addrs()
+        .ok()
+        .and_then(|mut addresses| addresses.next())
+        .map(|_| s.to_owned())
+        .ok_or_else(|| "expected host:port such as localhost:3241".into())
+}
+fn parse_level(s: &str) -> Result<String, String> {
+    let value = s.to_ascii_lowercase();
+    if ["trace", "debug", "info", "warn", "error", "off"].contains(&value.as_str()) {
+        Ok(value)
+    } else {
+        Err("expected trace, debug, info, warn or error".into())
     }
 }
