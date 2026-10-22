@@ -181,11 +181,6 @@ impl Drop for Attached {
     }
 }
 pub(super) struct Adapter;
-impl super::attachment::Lease for Attached {
-    async fn detach(&mut self) -> Result<(), AttachError> {
-        Attached::detach(self)
-    }
-}
 impl super::attachment::LeaseAdapter for Adapter {
     type Lease = Attached;
     type Transport = Either<UnixStream, TcpStream>;
@@ -208,6 +203,9 @@ impl super::attachment::LeaseAdapter for Adapter {
             return std::future::pending().await;
         };
         super::attachment::attached_transport(stream, channels, cancel).await
+    }
+    async fn detach(&self, lease: &mut Attached) -> Result<(), AttachError> {
+        lease.detach()
     }
 }
 fn write_attach(root: &Path, port: u32, fd: i32) -> io::Result<()> {

@@ -71,12 +71,8 @@ impl Attachment {
     }
 }
 
-pub(super) trait Lease {
-    async fn detach(&mut self) -> Result<(), AttachError>;
-}
-
 pub(super) trait LeaseAdapter {
-    type Lease: Lease;
+    type Lease;
     type Transport;
 
     async fn attach(
@@ -90,6 +86,7 @@ pub(super) trait LeaseAdapter {
         channels: &Channels,
         cancel: &CancellationToken,
     ) -> io::Result<()>;
+    async fn detach(&self, lease: &mut Self::Lease) -> Result<(), AttachError>;
 }
 
 async fn run_attached<A: LeaseAdapter, E: From<Error>>(
@@ -139,7 +136,7 @@ async fn run_attached<A: LeaseAdapter, E: From<Error>>(
     let (transport, drained) = tokio::join!(transport, drain);
     // Both transport and application work have drained, including on errors.
     let detached = match lease.as_mut() {
-        Some(lease) => lease.detach().await.map_err(Error::Attach),
+        Some(lease) => adapter.detach(lease).await.map_err(Error::Attach),
         None => Ok(()),
     };
     if server_ended_during_attach {
@@ -215,26 +212,19 @@ mod tests {
             assert_eq!(*self.0.borrow(), expected);
         }
     }
-    struct FakeLease(Events);
-    impl Lease for FakeLease {
-        async fn detach(&mut self) -> Result<(), AttachError> {
-            self.0.push("detach");
-            Ok(())
-        }
-    }
     struct FakeAdapter {
         events: Events,
         stream: RefCell<Option<DuplexStream>>,
         late_attach: bool,
     }
     impl LeaseAdapter for FakeAdapter {
-        type Lease = FakeLease;
+        type Lease = ();
         type Transport = DuplexStream;
 
         async fn attach(
             &self,
             cancel: &CancellationToken,
-        ) -> Result<(FakeLease, Option<DuplexStream>), AttachError> {
+        ) -> Result<((), Option<DuplexStream>), AttachError> {
             self.events.push("attach");
             if self.late_attach {
                 cancel.cancelled().await;
@@ -242,10 +232,7 @@ mod tests {
                 tokio::task::yield_now().await;
             }
             self.events.push("lease");
-            Ok((
-                FakeLease(self.events.clone()),
-                self.stream.borrow_mut().take(),
-            ))
+            Ok(((), self.stream.borrow_mut().take()))
         }
         async fn serve(
             &self,
@@ -262,6 +249,10 @@ mod tests {
                 }
                 None => std::future::pending().await,
             }
+        }
+        async fn detach(&self, _: &mut ()) -> Result<(), AttachError> {
+            self.events.push("detach");
+            Ok(())
         }
     }
     fn fake(events: &Events) -> (FakeAdapter, DuplexStream) {
