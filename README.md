@@ -94,6 +94,11 @@ at least 20 ms apart. Exit codes: 0 normal shutdown, 1 runtime failure, 2 invali
 parameters or USB setup failure. The hidden `--bt-smoke-test` enumerates adapters
 and scans for half a second. Retired native-library diagnostics are removed.
 
+Parsing intentionally differs from the old C# parser: long options are
+case-sensitive, there is no `/?` help alias, boolean flags take no value (such as
+`=true`), unknown `--log-level` values are rejected, and parse errors exit 2 as the
+specification requires (the old parser exited 1).
+
 ## Timing and verification
 
 ### Steam on Linux: detected controller but no input
