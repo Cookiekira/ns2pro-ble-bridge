@@ -41,8 +41,16 @@ pub trait Bluetooth {
     fn adapter_address(&self) -> impl Future<Output = Result<Address, BleError>>;
 }
 pub trait GattLink: 'static {
-    fn write(&self, characteristic: Characteristic, data: &[u8]) -> impl Future<Output = Result<(), LinkError>>;
-    fn subscribe(&self, characteristic: Characteristic, sink: NotificationSink) -> impl Future<Output = Result<(), LinkError>>;
+    fn write(
+        &self,
+        characteristic: Characteristic,
+        data: &[u8],
+    ) -> impl Future<Output = Result<(), LinkError>>;
+    fn subscribe(
+        &self,
+        characteristic: Characteristic,
+        sink: NotificationSink,
+    ) -> impl Future<Output = Result<(), LinkError>>;
     fn closed(&self) -> CancellationToken;
     /// Idempotently release the link, including partially initialized sessions.
     fn close(&self) -> impl Future<Output = ()>;
