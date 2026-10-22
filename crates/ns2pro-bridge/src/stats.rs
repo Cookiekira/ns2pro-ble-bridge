@@ -101,6 +101,9 @@ pub async fn diagnostics(
 ) {
     let mut tick = tokio::time::interval(Duration::from_secs(5));
     loop {
-        tokio::select! {_=cancel.cancelled()=>return,_=tick.tick()=>channels.stats.lock().unwrap().log()}
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tick.tick() => channels.stats.lock().unwrap().log(),
+        }
     }
 }

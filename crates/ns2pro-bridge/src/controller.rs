@@ -11,7 +11,7 @@ use ns2pro_proto::{
     input::parse_common_report,
     pairing::{Pairing, PairingError},
 };
-use std::time::Duration;
+use std::{convert::Infallible, time::Duration};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 #[derive(Debug, thiserror::Error)]
@@ -63,7 +63,12 @@ impl<'a, L: GattLink> Controller<'a, L> {
             command::response_payload(&response, request[0], request[3])?;
             Ok(response)
         };
-        tokio::select! {_=closed.cancelled()=>Err(LinkError::Closed.into()),result=tokio::time::timeout(Duration::from_secs(2),transaction)=>result.map_err(|_|ControllerError::Link(LinkError::Timeout))?}
+        tokio::select! {
+            _ = closed.cancelled() => Err(LinkError::Closed.into()),
+            result = tokio::time::timeout(Duration::from_secs(2), transaction) => {
+                result.map_err(|_| ControllerError::Link(LinkError::Timeout))?
+            }
+        }
     }
     pub async fn initialize(
         &mut self,
@@ -166,8 +171,6 @@ impl<'a, L: GattLink> Controller<'a, L> {
                 }
                 rumble.changed().await.map_err(|_| LinkError::Closed)?;
             }
-            #[allow(unreachable_code)]
-            Ok::<(), ControllerError>(())
         };
         let led_task = async {
             loop {
@@ -175,9 +178,13 @@ impl<'a, L: GattLink> Controller<'a, L> {
                 self.command(&command::set_player_leds(v)).await?;
                 leds.changed().await.map_err(|_| LinkError::Closed)?;
             }
-            #[allow(unreachable_code)]
-            Ok::<(), ControllerError>(())
         };
-        tokio::select! {_=cancel.cancelled()=>Err(ControllerError::Cancelled),_=closed.cancelled()=>Err(LinkError::Closed.into()),r=rumble_task=>r,r=led_task=>r}
+        let result: Result<Infallible, ControllerError> = tokio::select! {
+            _ = cancel.cancelled() => Err(ControllerError::Cancelled),
+            _ = closed.cancelled() => Err(LinkError::Closed.into()),
+            result = rumble_task => result,
+            result = led_task => result,
+        };
+        result.map(|never| match never {})
     }
 }
