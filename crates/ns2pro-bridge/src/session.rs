@@ -86,6 +86,7 @@ pub async fn attempt<B: Bluetooth>(
     };
     let result =
         tokio::select! {_=cancel.cancelled()=>Err(SessionError::Cancelled),result=setup=>result};
+    link.closed().cancel();
     channels.neutral();
     link.close().await;
     // An established session leaves a valid cache; a failed cached setup invalidates it.

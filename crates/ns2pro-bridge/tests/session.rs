@@ -489,3 +489,16 @@ async fn forget_device_and_bounded_cancellable_backoff() {
     let (result, ()) = tokio::join!(supervise(&bluetooth, &options, &channels, &cancel), driver);
     result.unwrap();
 }
+#[tokio::test]
+async fn late_notification_cannot_overwrite_neutral_after_disconnect() {
+    let link = Fake::default();
+    let channels = Channels::default();
+    let controller = Controller::new(&link).await.unwrap();
+    controller.initialize(&channels, 7).await.unwrap();
+    link.notify(&report());
+    assert_ne!(channels.input.borrow().state.buttons, Default::default());
+    link.closed.cancel();
+    channels.neutral();
+    link.notify(&report());
+    assert_eq!(channels.input.borrow().state, Default::default());
+}

@@ -94,6 +94,7 @@ impl<'a, L: GattLink> Controller<'a, L> {
         self.command(&command::enable_features(flags)).await?;
         let channels = channels.clone();
         let origin = std::time::Instant::now();
+        let closed = self.link.closed();
         self.link
             .subscribe(
                 Characteristic::Input,
@@ -101,6 +102,11 @@ impl<'a, L: GattLink> Controller<'a, L> {
                     move |bytes| match parse_common_report(bytes, &calibration) {
                         Ok(state) => {
                             channels.input.send_modify(|sample| {
+                                // Check under the watch lock so an in-flight WinRT callback cannot
+                                // publish stale held input after the supervisor's neutral reset.
+                                if closed.is_cancelled() {
+                                    return;
+                                }
                                 sample.state = state;
                                 sample.seq = sample.seq.wrapping_add(1);
                                 sample.motion_timestamp_us = origin.elapsed().as_micros() as u32;
