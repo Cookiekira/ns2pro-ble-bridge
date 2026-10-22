@@ -75,3 +75,14 @@ These remain cross-build and Wine execution results. Native Windows CI, Bluetoot
 - [RequestPreferredConnectionParameters](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.requestpreferredconnectionparameters).
 - usbip-win2 released headers: [v.0.9.7.7](https://github.com/vadimgrn/usbip-win2/blob/v.0.9.7.7/include/usbip/vhci.h), [v.0.9.7.8](https://github.com/vadimgrn/usbip-win2/blob/v.0.9.7.8/include/usbip/vhci.h), [v.0.9.8.1](https://github.com/vadimgrn/usbip-win2/blob/v.0.9.8.1/include/usbip/vhci.h).
 - [Driver validation before import](https://github.com/vadimgrn/usbip-win2/blob/v.0.9.8.1/drivers/ude/vhci_ioctl.cpp), [upstream attach/detach implementation](https://github.com/vadimgrn/usbip-win2/blob/v.0.9.8.1/userspace/libusbip/src/vhci.cpp).
+
+## Disconnect race final revalidation
+
+The ns2-windows agent fast-forwarded to exact integration code revision
+`9f1b0562820b9345f4b4a53b38af553f2026dd41` (including `ef49aca`) and reran strict
+Windows target clippy, optimized cargo-xwin workspace linking and Windows-target
+tests under Wine. All passed: **53 tests**, 0 failures, 2 opt-in measurements ignored
+in the default invocation. Counts: 13 bridge/native/CLI, 3 lifecycle, 7 primary
+session, 27 protocol and 3 fixture tests. The late-notification-after-neutral
+regression passed. No code edits were needed. These remain cross-build/Wine
+results, with native Windows CI/hardware unverified.
