@@ -143,3 +143,33 @@ hardware acceptance were performed. The Linux hardware fix is present in the
 revision but its Linux-specific readiness behavior is not exercised by these
 Windows-target tests. No push, main merge, issue closure, publication or extra
 agents/workspaces were involved in this validation.
+
+## Split bulk-response fix revalidation (2026-10-22)
+
+Exact tested integration revision: **`d0a0cbe25d206cd27ef2c4ddf0b2af3fc5fa43e3`**,
+including shared USB fix `d61bb37`. The Windows worktree was clean before updating.
+A fast-forward was initially impossible because its previous evidence commit
+`f1ea588` had been cherry-picked as `d0a0cbe`; rebasing onto integration skipped that
+already-applied evidence patch and left the branch exactly at `d0a0cbe`, with no
+remaining changes. No production code or integration/original checkout was edited.
+
+Using the same installed toolchain (rustc/cargo `1.100.0-nightly`, cargo-xwin
+`0.23.1` at `/tmp/ns2-windows-tools/bin/cargo-xwin`, clang-cl/LLD `23.1.3`,
+Wine `11.20`), all requested checks passed:
+
+- `cargo clippy --target x86_64-pc-windows-msvc --workspace --all-targets -- -D warnings`.
+- `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=wine WINEDEBUG=-all /tmp/ns2-windows-tools/bin/cargo-xwin test --target x86_64-pc-windows-msvc --workspace`: **54 passed, 0 failed**, 2 opt-in measurement tests ignored. Counts: 13 bridge/native/CLI, 3 lifecycle, **8 primary session**, 27 protocol and 3 fixture tests.
+- `/tmp/ns2-windows-tools/bin/cargo-xwin build --target x86_64-pc-windows-msvc --workspace --release`: actual optimized MSVC-target Windows executable linked successfully.
+- `cargo fmt --all -- --check` and `git diff --check`.
+
+The new real `serve_urbs`/in-memory peer regression,
+`flash_reply_survives_split_bulk_reads_without_consuming_the_next_reply`, passed
+under Wine. It covers retaining the tail of an 80-byte flash response across
+64+16-byte bulk reads, response order, immediate/pending delivery and zero-length
+read behavior. The two performance measurements were intentionally not rerun for
+this bulk-only fix, as requested; no updated latency claim is made.
+
+These are x86-64 MSVC cross-build and Wine-executed test results on Linux, not a
+native Windows CI or hardware run. Native Windows CI, actual usbip-win2 driver
+attach, and Bluetooth/controller hardware acceptance remain unverified. Only this
+platform evidence file is committed for the coordinator to cherry-pick.
