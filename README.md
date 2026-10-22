@@ -139,7 +139,8 @@ may subsequently change it. There is one attempt per connection, no retry fight,
 no stale rollback, and no monitoring claim after startup. Actual hardware acceptance
 of 7.5 ms is confirmed on the tested Linux adapter by the startup LE update
 event and user confirmation that noticeable Steam input delay disappeared.
-Reconnect stability and rejection on real hardware remain pending. Windows
+The user also confirmed power-off/reconnect retains 7.5 ms. Long-duration stability
+and rejection on real hardware remain pending. Windows
 requests ThroughputOptimized best-effort.
 
 Tests compare all exported USB fixture scenarios and supported descriptors, with

@@ -36,7 +36,8 @@ unchecked unless individually evidenced; see [integration evidence](rust-integra
 
 - [x] Captured Nintendo LE connection event: 48.75 ms, latency 0, supervision 420 ms. Recheck after any connection-parameter change.
 - [x] User-operated integration release eb73be3: startup observer reports 48.75 ms before request and a successful LE update to 7.5 ms, latency 0, supervision 2000 ms; controller initialization succeeds. User confirms noticeable Steam input delay disappeared. Evidence is the supplied runtime-log screenshot, not an independently saved HCI packet capture.
-- [ ] Save a fresh HCI packet capture for the 7.5 ms run, including outgoing 0x2013 and matching completion; verify stability across reconnects.
+- [x] User confirms controller power-off/reconnect works and still negotiates 7.5 ms on the tested adapter. This is user-reported acceptance; no additional trace or soak-test duration was supplied.
+- [ ] Save a fresh HCI packet capture for the 7.5 ms run, including outgoing 0x2013 and matching completion.
 - [ ] Rejection of optimization allows system-parameter connection to continue.
 - [ ] Verified 5 ms hardware path: currently unavailable; do not send generic interval 4.
 - [ ] Verify controller IMU timestamp semantics or retain monotonic receipt fallback.

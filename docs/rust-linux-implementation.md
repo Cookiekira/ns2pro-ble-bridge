@@ -245,7 +245,13 @@ delay disappeared. This establishes the requested interval on this hardware for
 this session and the user's perceived improvement. It does not measure complete
 button-to-display latency. No new report-rate measurement or independently saved
 packet capture was supplied. The earlier 48.75 ms capture remains baseline only.
-Reconnect stability, real rejection fallback, other adapters, per-feature output,
+Long-duration stability, real rejection fallback, other adapters, per-feature output,
 Windows hardware and 5 ms support remain separate acceptance items. The documented
 numeric-handle queue race remains unchanged. Earlier pending statements above
 record the pre-test state and are superseded by this result for this session.
+
+
+The user subsequently confirmed the requested power-off/reconnect check passed,
+including continued 7.5 ms negotiation. This is user-reported hardware acceptance
+on the same tested setup. No extra capture, reconnect count or long-duration test
+was supplied; it does not establish other-adapter or soak-test coverage.
