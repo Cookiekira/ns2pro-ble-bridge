@@ -2,7 +2,7 @@
 
 Use a **Switch 2 Pro Controller over Bluetooth** as a wired Switch 2 Pro Controller (USB `057e:2069`) on Linux or Windows. Steam and SDL see a normal USB controller.
 
-## Start here (Linux, about 5 minutes)
+## Start here (Linux)
 
 1. Download `ns2pro-ble-bridge-<version>-linux-x64` (or `-linux-arm64`) from [Releases](https://github.com/Cookiekira/ns2pro-ble-bridge/releases/latest), then run `chmod +x` on it.
 2. Load the virtual USB driver: `sudo modprobe vhci-hcd`
@@ -14,7 +14,7 @@ Next time, run step 3 and press **Home** to wake the controller. Stop with **Ctr
 
 Nothing else to install: no `usbip` tools, no BlueZ utilities, no .NET, Go or VIIPER. `bluetoothd` may keep running.
 
-## Windows (about 10 minutes)
+## Windows
 
 1. Install the signed [usbip-win2](https://github.com/vadimgrn/usbip-win2) driver (supported: v0.9.6.1–v0.9.8.1).
 2. Download `ns2pro-ble-bridge-<version>-win-x64.exe` from [Releases](https://github.com/Cookiekira/ns2pro-ble-bridge/releases/latest).
@@ -34,7 +34,7 @@ Windows is verified by native CI build and tests only. It has not been tested on
 
 Debug details: add `--log-level debug`. Every 5 s the log shows report rate, latency p50/p99 and the actual connection interval.
 
-## Run without root (manual attach, about 2 minutes)
+## Run without root (manual attach)
 
 1. Allow Bluetooth access once (repeat after replacing the binary):
    `sudo setcap cap_net_admin,cap_net_raw+ep ./ns2pro-ble-bridge-<version>-linux-x64`
@@ -73,7 +73,7 @@ Exit codes: `0` normal, `1` runtime failure, `2` bad arguments or USB setup fail
 
 Evidence and limits: [hardware checklist](docs/linux-hardware-checklist.md), [Linux details](docs/rust-linux-implementation.md), [integration record](docs/rust-integration-validation.md), [Windows record](docs/windows-native-validation.md).
 
-## Build from source (about 3 minutes)
+## Build from source
 
 ```sh
 cargo build --locked --release -p ns2pro-bridge
