@@ -1,0 +1,280 @@
+//! Primary boundary: real controller/session/device over fake GATT and a byte peer.
+use ns2pro_bridge::{ble::*, channels::Channels, controller::Controller, usb::session::serve_urbs};
+use ns2pro_proto::{
+    Address, calibration::Calibration, command, gatt::Characteristic, input::pack_stick12,
+    pairing::confirmation,
+};
+use ns2pro_usb::usbip::Urb;
+use std::sync::{Arc, Mutex};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt, DuplexStream},
+    time::{Duration, Instant},
+};
+use tokio_util::sync::CancellationToken;
+#[derive(Default)]
+struct Data {
+    writes: Vec<(Characteristic, Vec<u8>)>,
+    input: Option<NotificationSink>,
+    response: Option<NotificationSink>,
+    key: [u8; 16],
+    reject: bool,
+    bad_calibration: bool,
+    closes: usize,
+}
+#[derive(Clone, Default)]
+struct Fake {
+    data: Arc<Mutex<Data>>,
+    closed: CancellationToken,
+}
+impl Fake {
+    fn notify(&self, bytes: &[u8]) {
+        self.data.lock().unwrap().input.as_mut().unwrap()(bytes);
+    }
+    fn writes(&self) -> Vec<(Characteristic, Vec<u8>)> {
+        self.data.lock().unwrap().writes.clone()
+    }
+}
+impl GattLink for Fake {
+    async fn write(&self, ch: Characteristic, bytes: &[u8]) -> Result<(), LinkError> {
+        let mut d = self.data.lock().unwrap();
+        d.writes.push((ch, bytes.to_vec()));
+        if ch == Characteristic::Command {
+            let mut reply = vec![bytes[0], 0, bytes[2], bytes[3], 0, 0, 0, 0];
+            match (bytes[0], bytes[3]) {
+                (2, 4) => {
+                    if d.bad_calibration {
+                        reply[0] = 0xff;
+                    } else {
+                        let address = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+                        reply.extend([64, 0, 0, 0]);
+                        reply.extend(address.to_le_bytes());
+                        reply.extend(ns2pro_usb::device::flash_block(address));
+                    }
+                }
+                (0x15, sub) => {
+                    reply.push(u8::from(!d.reject));
+                    match sub {
+                        1 => reply.extend([0; 8]),
+                        4 => {
+                            d.key.copy_from_slice(&bytes[9..25]);
+                            reply.extend([0x33; 16]);
+                        }
+                        2 => {
+                            let ltk = d.key.map(|b| b ^ 0x33);
+                            let challenge = bytes[9..25].try_into().unwrap();
+                            reply.extend(confirmation(ltk, challenge));
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+            d.response.as_mut().unwrap()(&reply);
+        }
+        Ok(())
+    }
+    async fn subscribe(&self, ch: Characteristic, sink: NotificationSink) -> Result<(), LinkError> {
+        let mut d = self.data.lock().unwrap();
+        match ch {
+            Characteristic::Input => d.input = Some(sink),
+            Characteristic::CommandResponse => d.response = Some(sink),
+            _ => return Err(LinkError::Platform("not notifying".into())),
+        }
+        Ok(())
+    }
+    fn closed(&self) -> CancellationToken {
+        self.closed.clone()
+    }
+    async fn close(&self) {
+        let mut d = self.data.lock().unwrap();
+        d.closes += 1;
+        d.input = None;
+        d.response = None;
+        self.closed.cancel();
+    }
+}
+fn urb(seq: u32, dir: u32, ep: u32, len: usize) -> Urb {
+    Urb {
+        command: 1,
+        seq,
+        devid: 0x10001,
+        direction: dir,
+        ep,
+        length: len,
+        setup: [0; 8],
+        unlink_seq: 0,
+    }
+}
+async fn send(peer: &mut DuplexStream, u: Urb, body: &[u8]) {
+    peer.write_all(&u.header()).await.unwrap();
+    peer.write_all(body).await.unwrap();
+}
+async fn reply(peer: &mut DuplexStream) -> (u32, i32, Vec<u8>) {
+    let mut h = [0; 48];
+    peer.read_exact(&mut h).await.unwrap();
+    let seq = u32::from_be_bytes(h[4..8].try_into().unwrap());
+    let status = i32::from_be_bytes(h[20..24].try_into().unwrap());
+    let dir = u32::from_be_bytes(h[12..16].try_into().unwrap());
+    let cmd = u32::from_be_bytes(h[..4].try_into().unwrap());
+    let n = if dir == 1 && cmd == 3 {
+        u32::from_be_bytes(h[24..28].try_into().unwrap()) as usize
+    } else {
+        0
+    };
+    let mut data = vec![0; n];
+    peer.read_exact(&mut data).await.unwrap();
+    (seq, status, data)
+}
+fn report() -> [u8; 60] {
+    let mut r = [0; 60];
+    r[4] = 8;
+    r[10..13].copy_from_slice(&pack_stick12(0x123, 0x456));
+    r[13..16].copy_from_slice(&pack_stick12(0x789, 0xabc));
+    r[31..33].copy_from_slice(&3600u16.to_le_bytes());
+    r[33] = 0x34;
+    r[48..50].copy_from_slice(&(-5i16).to_le_bytes());
+    r
+}
+#[tokio::test(start_paused = true)]
+async fn complete_session_notification_to_usb_and_outputs() {
+    let link = Fake::default();
+    let channels = Channels::default();
+    let controller = Controller::new(&link).await.unwrap();
+    controller.initialize(&channels, 7).await.unwrap();
+    controller
+        .pair(
+            Address::new(0x112233445566).unwrap(),
+            [0x11; 16],
+            [0x22; 16],
+        )
+        .await
+        .unwrap();
+    let writes = link.writes();
+    assert_eq!(writes[0], (Characteristic::Init, vec![1, 0]));
+    assert!(
+        writes
+            .iter()
+            .any(|(c, b)| *c == Characteristic::Command && *b == command::enable_features(7))
+    );
+    let (mut peer, stream) = tokio::io::duplex(4096);
+    let cancel = CancellationToken::new();
+    let host = async {
+        // Enable common report and IMU through the real USB bulk command path.
+        for (seq, bytes) in [
+            (1, command::command(3, 0x0a, &[5, 0, 0, 0])),
+            (2, command::set_feature_mask(0xff)),
+            (3, command::enable_features(7)),
+        ] {
+            send(&mut peer, urb(seq, 0, 2, bytes.len()), &bytes).await;
+            assert_eq!(reply(&mut peer).await.1, 0);
+            send(&mut peer, urb(seq + 10, 1, 2, 64), &[]).await;
+            assert!(!reply(&mut peer).await.2.is_empty());
+        }
+        send(&mut peer, urb(20, 1, 1, 64), &[]).await;
+        reply(&mut peer).await;
+        send(&mut peer, urb(21, 1, 1, 64), &[]).await;
+        tokio::task::yield_now().await;
+        let before = Instant::now();
+        link.notify(&report());
+        let (_, status, bytes) = reply(&mut peer).await;
+        assert_eq!(status, 0);
+        assert_eq!(
+            Instant::now(),
+            before,
+            "notification must complete without advancing time"
+        );
+        assert_eq!(bytes[5] & 8, 8);
+        assert_eq!(&bytes[11..14], &pack_stick12(0x123, 0x456));
+        assert_eq!(&bytes[49..51], &(-5i16).to_le_bytes());
+        assert_eq!(bytes[34], 0x34);
+        // Dirty input retained until later IN; keepalive keeps its motion timestamp.
+        link.notify(&report());
+        send(&mut peer, urb(22, 1, 1, 64), &[]).await;
+        let data = reply(&mut peer).await.2;
+        send(&mut peer, urb(23, 1, 1, 64), &[]).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(4)).await;
+        let idle = reply(&mut peer).await.2;
+        assert_eq!(&idle[43..47], &data[43..47]);
+        let rumble: [u8; 33] = std::array::from_fn(|i| i as u8);
+        let mut rumble = rumble;
+        rumble[0] = 2;
+        send(&mut peer, urb(30, 0, 1, 33), &rumble).await;
+        assert_eq!(reply(&mut peer).await.1, 0);
+        tokio::task::yield_now().await;
+        let leds = command::set_player_leds(0x0f);
+        send(&mut peer, urb(31, 0, 2, leds.len()), &leds).await;
+        reply(&mut peer).await;
+        tokio::task::yield_now().await;
+        assert!(
+            link.writes()
+                .iter()
+                .any(|(ch, b)| *ch == Characteristic::Vibration
+                    && b.len() == 42
+                    && b[1..33] == rumble[1..])
+        );
+        assert!(link.writes().iter().any(|(ch,b)|*ch==Characteristic::Command&&*b==command::set_player_leds(15)));
+        cancel.cancel();
+    };
+    let (_, usb, _) = tokio::join!(
+        host,
+        serve_urbs(stream, channels.clone(), cancel.clone()),
+        controller.run(&channels, &cancel)
+    );
+    usb.unwrap();
+}
+#[tokio::test(start_paused = true)]
+async fn pending_bulk_unlink_stall_and_partial_header_survive_input() {
+    let (mut peer, stream) = tokio::io::duplex(4096);
+    let channels = Channels::default();
+    let cancel = CancellationToken::new();
+    let host = async {
+        send(&mut peer, urb(1, 1, 2, 64), &[]).await;
+        tokio::task::yield_now().await;
+        let mut pending = [0; 48];
+        assert!(futures::poll!(std::pin::pin!(peer.read_exact(&mut pending))).is_pending());
+        let cmd = command::command(0x10, 1, &[]);
+        send(&mut peer, urb(2, 0, 2, cmd.len()), &cmd).await;
+        assert_eq!(reply(&mut peer).await.0, 2);
+        assert_eq!(reply(&mut peer).await.0, 1);
+        send(&mut peer, urb(3, 1, 2, 64), &[]).await;
+        let mut unlink = urb(4, 0, 0, 0);
+        unlink.command = 2;
+        unlink.unlink_seq = 3;
+        send(&mut peer, unlink, &[]).await;
+        assert_eq!(reply(&mut peer).await.1, -104);
+        unlink.seq = 5;
+        send(&mut peer, unlink, &[]).await;
+        assert_eq!(reply(&mut peer).await.1, 0);
+        let mut stall = urb(6, 1, 0, 64);
+        stall.setup = [0xc0, 0x55, 0, 0, 0, 0, 64, 0];
+        let h = stall.header();
+        peer.write_all(&h[..9]).await.unwrap();
+        tokio::task::yield_now().await;
+        channels.input.send_modify(|s| s.seq += 1);
+        tokio::task::yield_now().await;
+        peer.write_all(&h[9..]).await.unwrap();
+        assert_eq!(reply(&mut peer).await.1, -32);
+        cancel.cancel();
+    };
+    let (_, r) = tokio::join!(host, serve_urbs(stream, channels.clone(), cancel.clone()));
+    r.unwrap();
+}
+#[tokio::test]
+async fn pairing_reject_and_calibration_fallback() {
+    let link = Fake::default();
+    link.data.lock().unwrap().bad_calibration = true;
+    let channels = Channels::default();
+    let controller = Controller::new(&link).await.unwrap();
+    controller.initialize(&channels, 7).await.unwrap();
+    link.notify(&report());
+    assert_eq!(channels.input.borrow().state.left_stick.x, 0x123);
+    assert_eq!(Calibration::default().primary, None);
+    link.data.lock().unwrap().reject = true;
+    assert!(
+        controller
+            .pair(Address::new(1).unwrap(), [0; 16], [0; 16])
+            .await
+            .is_err()
+    );
+}
