@@ -15,6 +15,11 @@ async fn main() -> std::process::ExitCode {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
+    tracing::info!(
+        executable = ?std::env::current_exe().ok(),
+        version = env!("CARGO_PKG_VERSION"),
+        "starting native Rust bridge"
+    );
     let local = tokio::task::LocalSet::new();
     match local.run_until(app::run(options)).await {
         Ok(()) => std::process::ExitCode::SUCCESS,

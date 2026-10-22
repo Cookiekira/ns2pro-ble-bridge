@@ -81,6 +81,7 @@ pub async fn attempt<B: Bluetooth>(
         }
         cache.save(target.address)?;
         state.established = true;
+        tracing::info!(address=%target.address, "controller initialized; receiving input");
         controller.run(channels, cancel).await?;
         Ok::<(), SessionError>(())
     };

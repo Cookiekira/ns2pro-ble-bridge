@@ -94,15 +94,19 @@ impl Bluetooth for LinuxBluetooth {
             },
         )
         .await?;
+        tracing::debug!(address=%target.address, "opening raw ATT connection");
         let socket = timeout(
             Duration::from_secs(10),
             socket::Socket::att(self.address, target.address, target.address_type),
         )
         .await
         .map_err(|_| BleError::Timeout)??;
-        AttLink::open(socket)
+        tracing::debug!(address=%target.address, "raw ATT connected; discovering GATT");
+        let link = AttLink::open(socket)
             .await
-            .map_err(|e| BleError::Platform(e.to_string()))
+            .map_err(|e| BleError::Platform(e.to_string()))?;
+        tracing::debug!(address=%target.address, "GATT discovery complete");
+        Ok(link)
     }
     async fn adapter_address(&self) -> Result<Address, BleError> {
         Ok(self.address)
