@@ -132,7 +132,7 @@ async fn notification_to_in_memory_response() {
     let (bridge, mut peer) = tokio::io::duplex(4096);
     let usb = serve_urbs(bridge, channels.clone(), usb_cancel.clone());
     let scenario = async {
-        let attempt_cache = ns2pro_bridge::cache::Cache(cache.path());
+        let attempt_cache = ns2pro_bridge::cache::Cache::new(cache.path());
         let attempt = session::attempt(&radio, &o, &channels, &attempt_cache, false, &cancel);
         tokio::pin!(attempt);
         tokio::select! {

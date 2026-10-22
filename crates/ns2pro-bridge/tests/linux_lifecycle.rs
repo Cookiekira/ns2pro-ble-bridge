@@ -14,12 +14,12 @@ use tokio_util::sync::CancellationToken;
 #[tokio::test(start_paused = true)]
 async fn failed_cached_acquisition_invalidates_but_explicit_address_wins() {
     let cache = TestCache::new();
-    Cache(cache.path()).save(address(1)).unwrap();
+    Cache::new(cache.path()).save(address(1)).unwrap();
     let radio = FakeBluetooth::default();
     radio.0.lock().unwrap().fail_connect = true;
     let channels = Channels::default();
     let cancel = CancellationToken::new();
-    let attempt_cache = Cache(cache.path());
+    let attempt_cache = Cache::new(cache.path());
     let mut o = options(&cache);
     o.device_address = Some(address(2));
     assert!(
@@ -29,7 +29,7 @@ async fn failed_cached_acquisition_invalidates_but_explicit_address_wins() {
             .is_err()
     );
     assert_eq!(radio.0.lock().unwrap().scans, [Some(address(2))]);
-    assert_eq!(Cache(cache.path()).load().unwrap(), Some(address(1)));
+    assert_eq!(Cache::new(cache.path()).load().unwrap(), Some(address(1)));
     o.device_address = None;
     assert!(
         session::attempt(&radio, &o, &channels, &attempt_cache, false, &cancel)
@@ -37,17 +37,17 @@ async fn failed_cached_acquisition_invalidates_but_explicit_address_wins() {
             .result
             .is_err()
     );
-    assert_eq!(Cache(cache.path()).load().unwrap(), None);
+    assert_eq!(Cache::new(cache.path()).load().unwrap(), None);
 }
 #[tokio::test(start_paused = true)]
 async fn cancellation_preserves_cache_and_partial_setup_releases_link() {
     let cache = TestCache::new();
-    Cache(cache.path()).save(address(1)).unwrap();
+    Cache::new(cache.path()).save(address(1)).unwrap();
     let radio = FakeBluetooth::default();
     radio.0.lock().unwrap().block_scan = true;
     let channels = Channels::default();
     let cancel = CancellationToken::new();
-    let attempt_cache = Cache(cache.path());
+    let attempt_cache = Cache::new(cache.path());
     let o = options(&cache);
     let attempt = session::attempt(&radio, &o, &channels, &attempt_cache, false, &cancel);
     tokio::pin!(attempt);
@@ -57,7 +57,7 @@ async fn cancellation_preserves_cache_and_partial_setup_releases_link() {
     }
     cancel.cancel();
     assert!(attempt.await.result.is_err());
-    assert_eq!(Cache(cache.path()).load().unwrap(), Some(address(1)));
+    assert_eq!(Cache::new(cache.path()).load().unwrap(), Some(address(1)));
     radio.0.lock().unwrap().block_scan = false;
     radio.0.lock().unwrap().fail_init = true;
     assert!(
@@ -65,7 +65,7 @@ async fn cancellation_preserves_cache_and_partial_setup_releases_link() {
             &radio,
             &o,
             &channels,
-            &Cache(cache.path()),
+            &Cache::new(cache.path()),
             false,
             &CancellationToken::new()
         )
@@ -74,7 +74,7 @@ async fn cancellation_preserves_cache_and_partial_setup_releases_link() {
         .is_err()
     );
     assert_eq!(radio.0.lock().unwrap().closed, 1);
-    assert_eq!(Cache(cache.path()).load().unwrap(), None);
+    assert_eq!(Cache::new(cache.path()).load().unwrap(), None);
 }
 #[tokio::test(start_paused = true)]
 async fn disconnect_neutral_reaches_usb_peer_and_reconnect_replays_led_without_old_rumble() {
@@ -89,7 +89,7 @@ async fn disconnect_neutral_reaches_usb_peer_and_reconnect_replays_led_without_o
     let (bridge, mut peer) = tokio::io::duplex(4096);
     let usb = serve_urbs(bridge, channels.clone(), usb_cancel.clone());
     let scenario = async {
-        let attempt_cache = Cache(cache.path());
+        let attempt_cache = Cache::new(cache.path());
         let pressed;
         {
             let attempt = session::attempt(&radio, &o, &channels, &attempt_cache, false, &cancel);
@@ -98,7 +98,7 @@ async fn disconnect_neutral_reaches_usb_peer_and_reconnect_replays_led_without_o
                 result = &mut attempt => panic!("setup failed: {result:?}"),
                 _ = until(|| ready(&radio)) => {}
             }
-            assert_eq!(Cache(cache.path()).load().unwrap(), Some(address(1)));
+            assert_eq!(Cache::new(cache.path()).load().unwrap(), Some(address(1)));
             emit(&radio, Buttons::A);
             pressed = report(&mut peer, 1).await;
             channels.rumble.send_replace(Some(Rumble {
