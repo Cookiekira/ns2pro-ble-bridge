@@ -1,5 +1,6 @@
 name: Release
 on:
+  workflow_dispatch:
   push:
     tags: ['v*']
 permissions:
@@ -37,6 +38,7 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
   release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     steps:
