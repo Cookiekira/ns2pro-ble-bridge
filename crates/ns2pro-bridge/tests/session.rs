@@ -589,7 +589,10 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
                 tokio::task::yield_now().await;
             }
             assert!(cache.path().exists());
-            assert_eq!(channels.stats.lock().unwrap().connection, bluetooth.report);
+            assert_eq!(
+                channels.stats.lock().unwrap().connection_report(),
+                bluetooth.report
+            );
             cancel.cancel();
         };
         let (result, ()) = tokio::join!(
@@ -607,7 +610,7 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
         assert!(result.paired);
         assert!(result.established);
         assert_eq!(
-            channels.stats.lock().unwrap().connection,
+            channels.stats.lock().unwrap().connection_report(),
             ConnectionReport::default()
         );
         paired = result.paired;
