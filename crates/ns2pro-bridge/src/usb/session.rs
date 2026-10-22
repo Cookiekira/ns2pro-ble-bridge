@@ -63,11 +63,13 @@ pub async fn serve_urbs<S: AsyncRead + AsyncWrite + Unpin>(
                 tokio::select! {_=cancel.cancelled()=>return Ok(()),result=writer.write_all(&effects.replies)=>result?};
                 effects.replies.clear();
             }
-            channels.stats.lock().unwrap().completion(
-                input.borrow().seq,
-                effects.input_completions,
-                effects.keepalives,
-            );
+            if let Some(seq) = effects.completed_sample_seq.take() {
+                channels.stats.lock().unwrap().completion(
+                    seq,
+                    effects.input_completions,
+                    effects.keepalives,
+                );
+            }
             effects.input_completions = 0;
             effects.keepalives = 0;
             for output in effects.outputs.drain(..) {

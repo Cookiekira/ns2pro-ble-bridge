@@ -90,7 +90,7 @@ pub async fn run(options: Options) -> Result<(), AppError> {
             let detached=attached.detach();result?;detached?;Ok(())
         }
     }.await;
-    // Linux backend drains scan workers before runtime shutdown (wired after native hardening).
+    bluetooth.close().await;
     result
 }
 #[cfg(windows)]
@@ -118,9 +118,22 @@ pub async fn run(options: Options) -> Result<(), AppError> {
                 .map_err(AppError::Usb);
         }
         let attach = Attached::attach(address, cancel.clone());
+        tokio::pin!(attach);
         let server = serve(&listener, channels.clone(), cancel.clone());
         tokio::pin!(server);
-        let mut attached = tokio::select! {result=attach=>result?,result=&mut server=>{result.map_err(AppError::Usb)?;return Ok(())}};
+        let mut attached = tokio::select! {
+            result=&mut attach=>match result {
+                Ok(lease)=>lease,
+                Err(AttachError::Cancelled) if cancel.is_cancelled()=>return Ok(()),
+                Err(error)=>return Err(error.into()),
+            },
+            result=&mut server=>{
+                cancel.cancel();
+                // Finish the IOCTL worker and detach any lease delivered during cancellation.
+                if let Ok(mut lease)=(&mut attach).await {lease.detach().await?;}
+                return result.map_err(AppError::Usb);
+            }
+        };
         let result = (&mut server).await;
         cancel.cancel();
         let detached = attached.detach().await;

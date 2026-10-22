@@ -195,7 +195,8 @@ impl Attached {
     pub fn port(&self) -> u32 {
         self.port
     }
-    /// Idempotent. Never detach a port whose exposed device/fd identity has changed.
+    /// Idempotent. A used port must still match the device/fd attached here.
+    /// During enumeration (status 5), vhci hides that identity; detach the owned port.
     pub fn detach(&mut self) -> Result<(), AttachError> {
         if !self.attached {
             return Ok(());
@@ -205,7 +206,7 @@ impl Attached {
             .find(|p| p.port == self.port);
         match current {
             Some(p)
-                if (p.status == 5 || p.status == 6) && p.fd == self.fd && p.device == DEVICE_ID =>
+                if p.status == 5 || (p.status == 6 && p.fd == self.fd && p.device == DEVICE_ID) =>
             {
                 fs::write(self.root.join("detach"), format!("{}", self.port))?;
             }
