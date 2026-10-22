@@ -21,8 +21,9 @@ only; implementation and commits are confined to the Linux worktree.
   at most 30 seconds after START completes. Busy discovery is observed passively;
   only successfully started discovery is stopped. A cancellation during START is
   drained through its completion and owned STOP. `LinuxBluetooth::close().await`
-  must run before runtime teardown to drain these workers. Smoke observes for a
-  full half second rather than stopping on the first advertisement.
+  must run before runtime teardown to drain these workers. Smoke returns on the
+  first Nintendo controller advertisement and otherwise succeeds when its
+  half-second window times out.
 - Raw nonblocking LE L2CAP binds the selected local adapter and fixed CID 4,
   requests BT_SECURITY_LOW and uses the freshly advertised public/random type.
   Connect is limited to 10 seconds. AsyncFd readiness handles EAGAIN and validates
