@@ -26,22 +26,19 @@ Windows is verified by native CI build and tests only. It has not been tested on
 
 | You see | Fix |
 | --- | --- |
-| Permission error at startup | Run with `sudo`. Auto-attach needs root. |
+| Permission error at startup | Run with `sudo`. |
 | `vhci` / attach error | `sudo modprobe vhci-hcd`, then start again. |
 | Steam shows the controller but no input (Linux, 32-bit Steam) | `sudo pacman -S --needed lib32-libusb` (Arch/CachyOS; use your distro's 32-bit libusb), then fully restart Steam. |
-| `LE interval request unavailable (needs CAP_NET_RAW)` | Input still works, at the slower default interval. Run as root, or add `cap_net_raw` (see below). |
 | `kernel removed virtual controller` | The virtual USB device was detached. Start the bridge again. |
 
 Debug details: add `--log-level debug`. Every 5 s the log shows report rate, latency p50/p99 and the actual connection interval.
 
-## Run without root (manual attach)
+## Use the controller on another machine
 
-1. Allow Bluetooth access once (repeat after replacing the binary):
-   `sudo setcap cap_net_admin,cap_net_raw+ep ./ns2pro-ble-bridge-<version>-linux-x64`
-2. Serve USB/IP instead of attaching: `./ns2pro-ble-bridge-<version>-linux-x64 --no-auto-attach`
-3. Attach from this or another machine: `sudo usbip --tcp-port 3241 attach -r HOST -b 1-1`
+1. On the machine with Bluetooth: `sudo ./ns2pro-ble-bridge-<version>-linux-x64 --no-auto-attach --usb-addr 0.0.0.0:3241`
+2. On the other machine: `sudo usbip --tcp-port 3241 attach -r HOST -b 1-1`
 
-The default address is `localhost:3241`. If `localhost` resolves only to `::1`, use `-r localhost`, or start with `--usb-addr 127.0.0.1:3241` (local) or `--usb-addr 0.0.0.0:3241` (remote). The USB/IP server has no authentication: expose it only to trusted machines.
+The USB/IP server has no authentication: expose it only to trusted machines.
 
 ## Options
 
