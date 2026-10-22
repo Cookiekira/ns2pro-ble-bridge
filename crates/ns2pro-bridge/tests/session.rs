@@ -433,7 +433,7 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
         ..Default::default()
     });
     let channels = Channels::default();
-    let attempt_cache = ns2pro_bridge::cache::Cache(cache.path());
+    let attempt_cache = ns2pro_bridge::cache::Cache::new(cache.path());
     let mut paired = false;
     for _ in 0..2 {
         let cancel = CancellationToken::new();
@@ -471,7 +471,7 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
     assert_eq!(bluetooth.observed().adapter_queries, 0);
     let scans = bluetooth.observed().scans;
     assert_eq!(scans[0], None);
-    assert_eq!(scans[1], Cache(cache.path()).load().unwrap());
+    assert_eq!(scans[1], Cache::new(cache.path()).load().unwrap());
     assert_eq!(
         bluetooth
             .writes()
@@ -488,7 +488,9 @@ async fn forget_device_and_bounded_cancellable_backoff() {
     use clap::Parser;
     use ns2pro_bridge::{cache::Cache, cli::Options, session::supervise};
     let cache = TestCache::new();
-    Cache(cache.path()).save(Address::new(1).unwrap()).unwrap();
+    Cache::new(cache.path())
+        .save(Address::new(1).unwrap())
+        .unwrap();
     let mut options = Options::parse_from(["bridge", "--forget-device"]);
     options.cache_file = cache.path();
     let bluetooth = FakeController::new(FakeOptions {

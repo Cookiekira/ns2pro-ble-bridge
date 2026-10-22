@@ -35,12 +35,8 @@ pub async fn attempt<B: Bluetooth>(
     cancel: &CancellationToken,
 ) -> AttemptOutcome {
     let mut established = false;
-    let cached = cache.load().unwrap_or_else(|e| {
-        tracing::warn!(%e,"ignoring invalid cache");
-        None
-    });
-    let selected = options.device_address.or(cached);
-    let from_cache = options.device_address.is_none() && cached.is_some();
+    let selection = cache.select(options.device_address);
+    let selected = selection.address();
     let result = async {
         let acquire = async {
             let target = bluetooth.scan(selected).await?;
@@ -93,20 +89,7 @@ pub async fn attempt<B: Bluetooth>(
         result
     }
     .await;
-    // An established session leaves a valid cache; failed cached attempts invalidate it.
-    let result = if from_cache
-        && !cancel.is_cancelled()
-        && !established
-        && result.as_ref().is_err_and(|error| {
-            !matches!(
-                error,
-                SessionError::Bluetooth(BleError::Cancelled) | SessionError::Cancelled
-            )
-        }) {
-        cache.forget().map_err(SessionError::from).and(result)
-    } else {
-        result
-    };
+    let result = selection.settle(established, cancel.is_cancelled(), result);
     AttemptOutcome {
         paired,
         established,
@@ -119,7 +102,7 @@ pub async fn supervise<B: Bluetooth>(
     channels: &Channels,
     cancel: &CancellationToken,
 ) -> Result<(), SessionError> {
-    let cache = Cache(options.cache_file.clone());
+    let cache = Cache::new(options.cache_file.clone());
     if options.forget_device {
         cache.forget()?;
     }
