@@ -78,3 +78,51 @@ No cache format, CLI option, descriptors, fixture bytes, retry policy, 20 ms rum
 throttle, interval request payload or ownership checks were changed. Earlier
 physical acceptance remains evidence for the pre-refactor build; these experiments
 do not constitute a new physical hardware run.
+
+# Deepening refactor ablation, 2026-10-23
+
+Six deepening refactors were merged first: USB attachment, connection teardown,
+statistics events, cache-owned target selection, a shared test fake and shared BLE
+timeouts. Each abstraction they introduced was then removed in turn and kept out
+only if the workspace tests and strict Linux and Windows-target Clippy still
+passed and the removal did not spread complexity to other callers. Where a test
+guarded the abstraction, a mutation was used as a negative control.
+
+## Deletions retained
+
+| Change | Evidence | Decision |
+| --- | --- | --- |
+| Inline `ble::matches_target` and `Characteristic::check_required` back into both BLE adapters and `att::Discovery::finish`. Keep the shared 30 s scan and 10 s connect timeouts. | Both were higher-order wrappers around a one-line address filter and a three-line loop. 91 tests pass; the removed tests only covered the wrappers. The existing ATT discovery tests still cover `finish`. | Keep the deletion. |
+| Fold the `Lease` trait into `LeaseAdapter::detach`. | One trait and three single-method impls removed. Removing the detach call fails 3 attachment tests. The attachment tests passed 50/50 repeated runs. | Keep the deletion. |
+| Inline `Connection::input_sink` back into `Controller::initialize`. | It was an associated function with no `self` and one caller. | Keep the deletion. |
+| Replace the `Connection::report` pass-through with `Connection::established`. | `Connection` already clears the statistics report on disconnect. It now also records the report, and `attempt` no longer reaches into the statistics lock. | Keep the deletion. |
+
+## Negative control: cache selection earns its place
+
+`Selection` (`Cache::select` and `settle`) has one caller and makes `cache` refer
+back to `session` errors, so it was a deletion candidate. Removing it and
+restoring the inline rule in `attempt` passed every test. However, three
+single-condition mutants of the invalidation rule also passed: dropping
+`!established`, dropping `!cancelled`, and treating a Bluetooth cancellation as a
+failure. With `Selection` and its decision-table test restored, each of these
+mutants fails a test. The abstraction is retained for that test surface.
+
+## Known gap
+
+The late-notification regression fails when input is neutralized after the link
+closes. It does not fail when `neutral` runs before the `closed` token is
+cancelled. That ordering guards a WinRT callback already in flight on another
+thread, and the in-process fake cannot deliver a callback between those two steps.
+The order is documented in `Connection::disconnect`.
+
+## Retained without an experiment
+
+- `usb::Error` keeps setup and transport I/O failures distinct. Without it, `usb`
+  would depend on `app::AppError`.
+- The platform-specific error precedence in `run_attached` preserves the
+  pre-refactor result when both detach and application drain fail.
+
+Steady-state input after the ablation: Fake GATT → USB/IP p50/p99 890/920 ns and
+pure decode/encode p99 40 ns, with 0 allocations in each case. These are
+single-run host timings and support a non-regression check only. No hardware run
+was made.
