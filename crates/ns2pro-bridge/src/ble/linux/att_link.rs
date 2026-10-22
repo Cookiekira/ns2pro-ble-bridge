@@ -20,12 +20,12 @@ struct Shared {
     pending: Mutex<Option<oneshot::Sender<Vec<u8>>>>,
     sinks: Mutex<Vec<(u16, NotificationSink)>>,
     transaction: AsyncMutex<()>,
-    writer: AsyncMutex<()>,
     closed: CancellationToken,
 }
 impl Shared {
     async fn send(&self, p: &[u8]) -> Result<(), LinkError> {
-        let _guard = self.writer.lock().await;
+        // SOCK_SEQPACKET writes one whole ATT PDU per send. Concurrent writers
+        // cannot interleave bytes; only request/reply transactions need a lock.
         tokio::select! {biased;_=self.closed.cancelled()=>Err(LinkError::Closed),result=self.socket.send(p)=>result.map_err(Into::into)}
     }
     fn close(&self) {
@@ -80,7 +80,6 @@ impl AttLink {
             pending: Mutex::new(None),
             sinks: Mutex::new(vec![]),
             transaction: AsyncMutex::new(()),
-            writer: AsyncMutex::new(()),
             closed: CancellationToken::new(),
         });
         let task_shared = shared.clone();
@@ -233,6 +232,87 @@ async fn read_loop(shared: &Shared) {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn concurrent_writes_keep_packet_boundaries_under_backpressure() {
+        let (socket, peer) = super::super::socket::pair();
+        let buffer: libc::c_int = 4096;
+        // SAFETY: socket is owned, buffer is readable native integer storage.
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    socket.fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&buffer as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&buffer) as _,
+                )
+            },
+            0
+        );
+        let shared = Shared {
+            socket,
+            peer_mtu: AtomicU16::new(att::MTU),
+            pending: Mutex::new(None),
+            sinks: Mutex::new(vec![]),
+            transaction: AsyncMutex::new(()),
+            closed: CancellationToken::new(),
+        };
+        let completed = std::cell::Cell::new(0);
+        let writes = async {
+            for seq in 0..256u16 {
+                let mut p = [0xa5; 247];
+                p[0] = 0x52;
+                p[1..3].copy_from_slice(&seq.to_le_bytes());
+                shared.send(&p).await.unwrap();
+                completed.set(completed.get() + 1);
+            }
+        };
+        // The ATT reader can acknowledge an indication while host writes are pending.
+        let confirmations = async {
+            for _ in 0..256 {
+                shared.send(&[0x1e]).await.unwrap();
+                completed.set(completed.get() + 1);
+            }
+        };
+        let receive = async {
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                completed.get() < 512,
+                "must exercise a full socket send buffer"
+            );
+            let mut seen = [false; 256];
+            let mut confirmations = 0;
+            let mut p = [0; 247];
+            for _ in 0..512 {
+                let n = peer.recv(&mut p).await.unwrap();
+                match p[0] {
+                    0x52 => {
+                        assert_eq!(n, 247);
+                        assert!(p[3..].iter().all(|b| *b == 0xa5));
+                        let seq = u16::from_le_bytes([p[1], p[2]]) as usize;
+                        assert!(!seen[seq]);
+                        seen[seq] = true;
+                    }
+                    0x1e => {
+                        assert_eq!(n, 1);
+                        confirmations += 1;
+                    }
+                    _ => panic!("interleaved packet"),
+                }
+            }
+            assert!(seen.into_iter().all(|v| v));
+            assert_eq!(confirmations, 256);
+        };
+        timeout(Duration::from_secs(2), async {
+            tokio::join!(writes, confirmations, receive)
+        })
+        .await
+        .unwrap();
+        shared.closed.cancel();
+        assert!(matches!(shared.send(&[0x1e]).await, Err(LinkError::Closed)));
+    }
+    #[tokio::test]
     async fn peer_requests_indications_and_disconnect() {
         let (a, b) = super::super::socket::pair();
         let shared = Arc::new(Shared {
@@ -241,7 +321,6 @@ mod tests {
             pending: Mutex::new(None),
             sinks: Mutex::new(vec![]),
             transaction: AsyncMutex::new(()),
-            writer: AsyncMutex::new(()),
             closed: CancellationToken::new(),
         });
         let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
@@ -280,7 +359,6 @@ mod tests {
             pending: Mutex::new(None),
             sinks: Mutex::new(vec![]),
             transaction: AsyncMutex::new(()),
-            writer: AsyncMutex::new(()),
             closed: CancellationToken::new(),
         });
         let transaction = shared.request(&[0x12, 1, 0, 1, 0]);
