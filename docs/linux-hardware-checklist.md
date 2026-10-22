@@ -55,7 +55,7 @@ runs are kept as history; see [integration evidence](rust-integration-validation
 - [ ] Verified 5 ms hardware path: unavailable on this adapter; generic interval 4 is never sent.
 - [x] Controller IMU timestamp semantics not verified; the monotonic receipt-time fallback is retained as the spec allows.
 - [x] Linux x64 hardware acceptance (this record). Linux arm64: native CI build and tests only (run 39772269154); no arm64 hardware available.
-- [ ] Long soak on `v0.2.0`: runs A–F were each a few minutes. A one-hour play session on the pre-merge build had no reported problems; a 30-minute `v0.2.0` soak remains to be recorded.
+- [x] Soak on the identity build (PR #32, `main` after #32): about 24 minutes of user play (23:54–00:18 local), 0 disconnects, 0 warnings/errors, 7.5 ms `Confirmed` throughout, mean interarrival 7.55 ms. Bridge p99 median 21 µs; one of 284 five-second windows (the first minute) reached 1.03 ms and none afterwards. The user reports no problems.
 
 Windows delivery has separate build/test evidence; no Windows hardware claim is made.
 
