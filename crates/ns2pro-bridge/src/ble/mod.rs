@@ -20,6 +20,11 @@ pub enum BleError {
     #[error("Bluetooth operation cancelled")]
     Cancelled,
 }
+impl From<ns2pro_proto::mgmt::Malformed> for BleError {
+    fn from(error: ns2pro_proto::mgmt::Malformed) -> Self {
+        Self::Platform(error.to_string())
+    }
+}
 #[derive(Debug, thiserror::Error)]
 pub enum LinkError {
     #[error("GATT I/O: {0}")]
@@ -30,8 +35,6 @@ pub enum LinkError {
     Timeout,
     #[error("GATT link closed")]
     Closed,
-    #[error("GATT operation cancelled")]
-    Cancelled,
 }
 pub trait Bluetooth {
     type Link: GattLink;

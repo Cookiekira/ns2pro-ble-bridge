@@ -6,16 +6,14 @@ use crate::ble::{BleError, Bluetooth, Discovered};
 pub use att_link::AttLink;
 use mgmt::Management;
 use ns2pro_proto::Address;
-use std::sync::Mutex;
-use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 #[derive(Debug)]
 pub struct LinuxBluetooth {
     index: u16,
     address: Address,
     shutdown: CancellationToken,
-    scans: Mutex<Vec<JoinHandle<()>>>,
+    scans: TaskTracker,
 }
 impl LinuxBluetooth {
     pub async fn new() -> Result<Self, BleError> {
@@ -24,55 +22,40 @@ impl LinuxBluetooth {
             index,
             address,
             shutdown: CancellationToken::new(),
-            scans: Mutex::new(Vec::new()),
+            scans: TaskTracker::new(),
         })
     }
     async fn discover(
         &self,
         target: Option<Address>,
         duration: Duration,
-        observe_only: bool,
     ) -> Result<Option<Discovered>, BleError> {
-        struct CancelOnDrop(CancellationToken);
-        impl Drop for CancelOnDrop {
-            fn drop(&mut self) {
-                self.0.cancel();
-            }
-        }
-        let guard = CancelOnDrop(self.shutdown.child_token());
-        let cancel = guard.0.clone();
+        let cancel = self.shutdown.child_token();
+        let _guard = cancel.clone().drop_guard();
         let index = self.index;
         // The owned worker finishes START/STOP if its caller is cancelled midway.
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            let result = Management::scan(index, target, cancel, duration, observe_only).await;
+        self.scans.spawn(async move {
+            let result = Management::scan(index, target, cancel, duration).await;
             let _ = tx.send(result);
         });
-        {
-            let mut scans = self.scans.lock().unwrap();
-            scans.retain(|t| !t.is_finished());
-            scans.push(task);
-        }
         rx.await.map_err(|e| BleError::Platform(e.to_string()))?
     }
     /// Drain owned discovery cleanup before the current-thread runtime is stopped.
     pub async fn close(&self) {
         self.shutdown.cancel();
-        let scans = std::mem::take(&mut *self.scans.lock().unwrap());
-        for task in scans {
-            let _ = task.await;
-        }
+        self.scans.close();
+        self.scans.wait().await;
     }
     pub async fn smoke_test(&self) -> Result<(), BleError> {
-        self.discover(None, Duration::from_millis(500), true)
-            .await?;
+        self.discover(None, Duration::from_millis(500)).await?;
         Ok(())
     }
 }
 impl Bluetooth for LinuxBluetooth {
     type Link = AttLink;
     async fn scan(&self, target: Option<Address>) -> Result<Discovered, BleError> {
-        self.discover(target, Duration::from_secs(30), false)
+        self.discover(target, Duration::from_secs(30))
             .await?
             .ok_or(BleError::Timeout)
     }

@@ -105,11 +105,31 @@ pub fn indexes(p: &[u8]) -> Result<Vec<u16>, Malformed> {
     }
     (0..count).map(|i| word(p, 2 + i * 2)).collect()
 }
+pub fn connections(p: &[u8]) -> Result<Vec<Device>, Malformed> {
+    let count = usize::from(word(p, 0)?);
+    if p.len() != 2 + 7 * count {
+        return Err(Malformed);
+    }
+    p[2..]
+        .as_chunks::<7>()
+        .0
+        .iter()
+        .map(|p| Device::decode(p))
+        .collect()
+}
 #[derive(Debug, Clone, Copy)]
 pub struct AdapterInfo {
     pub address: Address,
     pub supported: u32,
     pub current: u32,
+}
+impl AdapterInfo {
+    pub fn supports_le(&self) -> bool {
+        self.supported & (1 << 9) != 0
+    }
+    pub fn powered(&self) -> bool {
+        self.current & 1 != 0
+    }
 }
 pub fn adapter_info(p: &[u8]) -> Result<AdapterInfo, Malformed> {
     if p.len() != 280 {
@@ -236,6 +256,25 @@ mod tests {
         assert_eq!(found(&p).unwrap().device.address_type, 2);
         p.pop();
         assert!(found(&p).is_err());
+    }
+    #[test]
+    fn connections_validate_count_length_and_address_type() {
+        let device = Device {
+            address: "01:02:03:04:05:06".parse().unwrap(),
+            address_type: 2,
+        };
+        let mut payload = vec![1, 0];
+        payload.extend(device.encode());
+        assert_eq!(connections(&payload).unwrap(), [device]);
+        assert_eq!(connections(&[0, 0]).unwrap(), []);
+        for n in 0..payload.len() {
+            assert!(connections(&payload[..n]).is_err());
+        }
+        payload.push(0);
+        assert!(connections(&payload).is_err());
+        payload.pop();
+        payload[8] = 3;
+        assert!(connections(&payload).is_err());
     }
     #[test]
     fn completion_status_layout() {

@@ -40,16 +40,14 @@ impl Management {
         index: u16,
         payload: &[u8],
     ) -> Result<(u8, Vec<u8>), BleError> {
-        let p =
-            mgmt::command(opcode, index, payload).map_err(|e| BleError::Platform(e.to_string()))?;
+        let p = mgmt::command(opcode, index, payload)?;
         self.socket.send_management(&p).await?;
         timeout(Duration::from_secs(5), async {
             loop {
                 let p = self.receive().await?;
-                let f = Frame::decode(&p).map_err(|e| BleError::Platform(e.to_string()))?;
+                let f = Frame::decode(&p)?;
                 if f.index == index
-                    && let Some(c) =
-                        mgmt::completion(f).map_err(|e| BleError::Platform(e.to_string()))?
+                    && let Some(c) = mgmt::completion(f)?
                     && c.command == opcode
                     && (f.opcode == 1 || c.status != 0)
                 {
@@ -82,13 +80,13 @@ impl Management {
     pub(super) async fn select() -> Result<(u16, Address), BleError> {
         let mut m = Self::open()?;
         let p = m.checked(mgmt::READ_INDEX_LIST, 0xffff, &[]).await?;
-        for index in mgmt::indexes(&p).map_err(|e| BleError::Platform(e.to_string()))? {
+        for index in mgmt::indexes(&p)? {
             let p = m.checked(mgmt::READ_INFO, index, &[]).await?;
-            let info = mgmt::adapter_info(&p).map_err(|e| BleError::Platform(e.to_string()))?;
-            if info.supported & (1 << 9) == 0 {
+            let info = mgmt::adapter_info(&p)?;
+            if !info.supports_le() {
                 continue;
             }
-            if info.current & 1 == 0 {
+            if !info.powered() {
                 m.checked(mgmt::SET_POWERED, index, &[1]).await?;
             }
             tracing::info!(index,address=%info.address,"using native Bluetooth adapter");
@@ -101,9 +99,8 @@ impl Management {
         target: Option<Address>,
         cancel: CancellationToken,
         duration: Duration,
-        observe_only: bool,
     ) -> Result<Option<Discovered>, BleError> {
-        Self::scan_with(Self::open()?, index, target, cancel, duration, observe_only).await
+        Self::scan_with(Self::open()?, index, target, cancel, duration).await
     }
     async fn scan_with(
         mut m: Self,
@@ -111,7 +108,6 @@ impl Management {
         target: Option<Address>,
         cancel: CancellationToken,
         duration: Duration,
-        observe_only: bool,
     ) -> Result<Option<Discovered>, BleError> {
         // Complete START even after caller cancellation so an owned discovery can be stopped.
         let (status, _) = m
@@ -126,17 +122,36 @@ impl Management {
                 )));
             }
         };
-        let result = tokio::select! {biased;_=cancel.cancelled()=>Err(BleError::Cancelled),result=timeout(duration,async{
-            loop{
-                let p=if let Some(p)=m.events.pop_front(){p}else{m.receive().await?};
-                let f=Frame::decode(&p).map_err(|e|BleError::Platform(e.to_string()))?;
-                if f.index!=index||f.opcode!=mgmt::DEVICE_FOUND{continue}
-                let found=mgmt::found(f.payload).map_err(|e|BleError::Platform(e.to_string()))?;
-                // BR/EDR and scan responses without matching manufacturer identity cannot qualify.
-                if ![1,2].contains(&found.device.address_type)||target.is_some_and(|a|a!=found.device.address){continue}
-                if !observe_only && mgmt::controller_advertisement(found.eir).map_err(|e|BleError::Platform(e.to_string()))?.is_some(){return Ok(Some(Discovered{address:found.device.address,address_type:found.device.address_type}))}
-            }
-        })=>result.unwrap_or(Ok(None))};
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(BleError::Cancelled),
+            result = timeout(duration, async {
+                loop {
+                    let p = if let Some(p) = m.events.pop_front() {
+                        p
+                    } else {
+                        m.receive().await?
+                    };
+                    let f = Frame::decode(&p)?;
+                    if f.index != index || f.opcode != mgmt::DEVICE_FOUND {
+                        continue;
+                    }
+                    let found = mgmt::found(f.payload)?;
+                    // BR/EDR and scan responses without matching manufacturer identity cannot qualify.
+                    if ![1, 2].contains(&found.device.address_type)
+                        || target.is_some_and(|a| a != found.device.address)
+                    {
+                        continue;
+                    }
+                    if mgmt::controller_advertisement(found.eir)?.is_some() {
+                        return Ok(Some(Discovered {
+                            address: found.device.address,
+                            address_type: found.device.address_type,
+                        }));
+                    }
+                }
+            }) => result.unwrap_or(Ok(None)),
+        };
         if owned
             && let Err(e) = m
                 .checked(mgmt::STOP_DISCOVERY, index, &[mgmt::LE_DISCOVERY])
@@ -152,18 +167,8 @@ impl Management {
     ) -> Result<(), BleError> {
         let mut m = Self::open()?;
         let p = m.checked(mgmt::GET_CONNECTIONS, index, &[]).await?;
-        if p.len() < 2 {
-            return Err(BleError::Platform("short GET_CONNECTIONS response".into()));
-        }
-        let count = usize::from(u16::from_le_bytes([p[0], p[1]]));
-        if p.len() != 2 + 7 * count {
-            return Err(BleError::Platform(
-                "invalid GET_CONNECTIONS response".into(),
-            ));
-        }
-        for entry in p[2..].as_chunks::<7>().0 {
-            if mgmt::Device::decode(entry).map_err(|e| BleError::Platform(e.to_string()))? == device
-            {
+        for connected in mgmt::connections(&p)? {
+            if connected == device {
                 m.checked(mgmt::DISCONNECT, index, &device.encode()).await?;
                 break;
             }
@@ -221,7 +226,6 @@ mod tests {
             Some(target),
             CancellationToken::new(),
             Duration::from_secs(30),
-            false,
         );
         let peer = async {
             assert_eq!(request(&b, mgmt::START_DISCOVERY).await, [6]);
@@ -248,14 +252,8 @@ mod tests {
     async fn cancellation_during_start_still_stops_owned_discovery() {
         let (a, b) = super::super::socket::pair();
         let cancel = CancellationToken::new();
-        let scan = Management::scan_with(
-            manager(a),
-            0,
-            None,
-            cancel.clone(),
-            Duration::from_secs(30),
-            false,
-        );
+        let scan =
+            Management::scan_with(manager(a), 0, None, cancel.clone(), Duration::from_secs(30));
         let peer = async {
             request(&b, mgmt::START_DISCOVERY).await;
             cancel.cancel();
@@ -265,6 +263,27 @@ mod tests {
         };
         let (result, ()) = tokio::join!(scan, peer);
         assert!(matches!(result, Err(BleError::Cancelled)));
+    }
+    #[tokio::test(start_paused = true)]
+    async fn short_scan_without_controller_times_out_and_stops_owned_discovery() {
+        let (a, b) = super::super::socket::pair();
+        let scan = Management::scan_with(
+            manager(a),
+            0,
+            None,
+            CancellationToken::new(),
+            Duration::from_millis(500),
+        );
+        let peer = async {
+            assert_eq!(request(&b, mgmt::START_DISCOVERY).await, [6]);
+            complete(&b, mgmt::START_DISCOVERY, 0).await;
+            // The paused clock advances to the timeout while the scanner waits
+            // for an advertisement and the peer waits for STOP.
+            assert_eq!(request(&b, mgmt::STOP_DISCOVERY).await, [6]);
+            complete(&b, mgmt::STOP_DISCOVERY, 0).await;
+        };
+        let (result, ()) = tokio::join!(scan, peer);
+        assert_eq!(result.unwrap(), None);
     }
     #[tokio::test]
     async fn successful_status_is_not_command_complete() {
