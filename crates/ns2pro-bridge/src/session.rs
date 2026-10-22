@@ -1,10 +1,10 @@
 //! Portable selection, cache and reconnect lifecycle.
 use crate::{
-    ble::{BleError, Bluetooth, GattLink},
+    ble::{BleError, Bluetooth},
     cache::Cache,
     channels::Channels,
     cli::Options,
-    controller::{Controller, ControllerError},
+    controller::{Connection, ControllerError},
 };
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -47,12 +47,9 @@ pub async fn attempt<B: Bluetooth>(
             _ = cancel.cancelled() => Err(SessionError::Cancelled),
             result = acquire => result,
         }?;
-        channels.rumble.send_replace(None);
+        let connection = Connection::new(link, channels);
         let setup = async {
-            let mut controller = Controller::new(&link).await?;
-            controller
-                .initialize(channels, options.feature_flags)
-                .await?;
+            let mut controller = connection.initialize(options.feature_flags).await?;
             if selected.is_none() || (options.pair_host && !paired) {
                 let host = match options.host_address {
                     Some(a) => a,
@@ -72,7 +69,7 @@ pub async fn attempt<B: Bluetooth>(
                 .stats
                 .lock()
                 .unwrap()
-                .connected(link.connection_report());
+                .connected(connection.report());
             established = true;
             tracing::info!(address=%target.address, "controller initialized; receiving input");
             controller.run(channels, cancel).await?;
@@ -82,10 +79,7 @@ pub async fn attempt<B: Bluetooth>(
             _ = cancel.cancelled() => Err(SessionError::Cancelled),
             result = setup => result,
         };
-        channels.stats.lock().unwrap().disconnected();
-        link.closed().cancel();
-        channels.neutral();
-        link.close().await;
+        connection.disconnect().await;
         result
     }
     .await;
