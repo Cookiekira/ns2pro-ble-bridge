@@ -17,8 +17,9 @@ The release workflow is configured to build Linux x64, Linux arm64 **natively on
 an ARM runner**, and Windows x64, named `ns2pro-ble-bridge-<tag>-<rid>` (Windows adds `.exe`).
 Manual dispatch builds and uploads artifacts without publishing a GitHub release;
 only `v*` tag pushes publish releases. CI also checks native Linux arm64 builds,
-strict clippy and tests. ARM workflow execution and hardware remain unverified;
-these workflow changes have not been published as a release.
+strict clippy and tests. CI run 39772269154 passed the Linux x64, Linux arm64 and
+Windows jobs; release dry run 39769150686 built all three artifacts, and release run
+39772680571 published `v0.2.0`. Linux arm64 hardware remains unverified.
 
 ## Linux
 
@@ -65,8 +66,8 @@ ABIs are not assumed compatible. Driver/access errors include recovery hints.
 `--no-auto-attach` serves the same TCP protocol without driver attachment.
 
 The executable is cross-linked for Windows MSVC and automated tests have run under
-Wine. Native Windows CI is configured to build and run tests; it has not been run
-by this local implementation session. No Windows Bluetooth/driver hardware
+Wine. Native Windows CI builds, runs strict clippy and passes the tests on
+`windows-latest` (run 39772269154). No Windows Bluetooth/driver hardware
 acceptance is claimed. See [Windows evidence](docs/windows-native-validation.md).
 
 ## Options
