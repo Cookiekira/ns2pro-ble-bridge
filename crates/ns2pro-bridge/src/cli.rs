@@ -4,22 +4,31 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Parser)]
 #[command(version, about = "Native Switch 2 Pro BLE to USB bridge")]
 pub struct Options {
+    /// USB/IP listen address (HOST:PORT) for manual Linux and Windows serving
     #[arg(long, default_value = "localhost:3241", value_parser=parse_usb_addr)]
     pub usb_addr: String,
+    /// Controller address; overrides cache and discovery selection
     #[arg(long)]
     pub device_address: Option<Address>,
+    /// Pair again, once successfully per process across reconnects
     #[arg(long)]
     pub pair_host: bool,
+    /// Pairing host identity override; bypasses adapter identity lookup
     #[arg(long)]
     pub host_address: Option<Address>,
+    /// Remove the cached selection before reconnect supervision
     #[arg(long)]
     pub forget_device: bool,
+    /// Controller cache file
     #[arg(long,default_value_os_t=default_cache())]
     pub cache_file: PathBuf,
+    /// Serve TCP USB/IP for manual/remote clients without attaching
     #[arg(long)]
     pub no_auto_attach: bool,
+    /// Feature flags (buttons, sticks, IMU); hexadecimal or decimal
     #[arg(long,default_value=default_feature_flags(),value_parser=parse_flags)]
     pub feature_flags: u8,
+    /// Log level: trace, debug, info, warn, error or off; RUST_LOG takes precedence
     #[arg(long, default_value = "info",value_parser=parse_level)]
     pub log_level: String,
     #[arg(long, hide = true)]
