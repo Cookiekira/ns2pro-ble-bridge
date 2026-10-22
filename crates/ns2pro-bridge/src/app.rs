@@ -3,7 +3,7 @@ use crate::{
     channels::Channels,
     cli::Options,
     session,
-    usb::{host::AttachError, server::serve},
+    usb::{AttachError, server::serve},
 };
 use tokio_util::sync::CancellationToken;
 #[derive(Debug, thiserror::Error)]

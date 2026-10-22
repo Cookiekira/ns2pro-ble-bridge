@@ -1,5 +1,5 @@
 //! Native vhci sysfs attachment. No USB/IP subprocess or timed write batching.
-use crate::usb::host::AttachError;
+use crate::usb::AttachError;
 use std::{
     fs, io,
     os::fd::AsRawFd,

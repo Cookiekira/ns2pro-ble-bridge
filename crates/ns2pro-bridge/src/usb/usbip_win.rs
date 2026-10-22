@@ -1,6 +1,6 @@
 //! Native usbip-win2 attach. All device discovery/IOCTL waits run on a blocking
 //! worker, leaving the shared USB/IP TCP listener responsive during import.
-use super::host::AttachError;
+use super::AttachError;
 use std::{
     mem::size_of,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
