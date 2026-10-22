@@ -21,6 +21,9 @@ jobs:
             os: windows-latest
             executable: ns2pro-ble-bridge.exe
     runs-on: ${{ matrix.os }}
+    env:
+      # Tags name releases; a manual dry run uses the commit, since branch names may contain '/'.
+      LABEL: ${{ github.ref_type == 'tag' && github.ref_name || format('dryrun-{0}', github.sha) }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -31,10 +34,10 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
           $extension = if ('${{ matrix.rid }}' -eq 'win-x64') { '.exe' } else { '' }
-          Copy-Item 'target/release/${{ matrix.executable }}' "artifacts/ns2pro-ble-bridge-${{ github.ref_name }}-${{ matrix.rid }}$extension"
+          Copy-Item 'target/release/${{ matrix.executable }}' "artifacts/ns2pro-ble-bridge-${{ env.LABEL }}-${{ matrix.rid }}$extension"
       - uses: actions/upload-artifact@v7
         with:
-          name: ns2pro-ble-bridge-${{ github.ref_name }}-${{ matrix.rid }}
+          name: ns2pro-ble-bridge-${{ env.LABEL }}-${{ matrix.rid }}
           path: artifacts/*
           if-no-files-found: error
   release:
