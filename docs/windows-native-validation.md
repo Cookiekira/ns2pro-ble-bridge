@@ -86,3 +86,60 @@ in the default invocation. Counts: 13 bridge/native/CLI, 3 lifecycle, 7 primary
 session, 27 protocol and 3 fixture tests. The late-notification-after-neutral
 regression passed. No code edits were needed. These remain cross-build/Wine
 results, with native Windows CI/hardware unverified.
+
+## Post-hardware-fix integration revalidation (2026-10-22)
+
+The `feat/rust-windows` worktree was clean before a successful `git merge --ff-only
+feat/rust-rewrite`. Exact tested integration revision:
+**`be529fc558a3ff53e5f269d14a205253b6156880`**, including Linux readiness fix
+`1cc33ff`, documentation update `a04cddb`, and executable/connection logging
+`be529fc`. No production code changed during this validation. Only this evidence
+file is committed afterward, so its commit can be cherry-picked independently.
+The integration worktree and original checkout were not edited.
+
+Tool versions: rustc `1.100.0-nightly (0dfb098f3 2026-08-31)`, cargo
+`1.100.0-nightly (e8cb624d5 2026-08-22)`, cargo-xwin `0.23.1` at
+`/tmp/ns2-windows-tools/bin/cargo-xwin`, clang-cl/LLD `23.1.3`, Wine `11.20`.
+These checks target only `x86_64-pc-windows-msvc` on the Linux host; they do not
+establish compatibility with an older Rust compiler or other Windows architectures.
+
+| Executed check | Result |
+| --- | --- |
+| `cargo clippy --target x86_64-pc-windows-msvc --workspace --all-targets -- -D warnings` | Passed |
+| `/tmp/ns2-windows-tools/bin/cargo-xwin build --target x86_64-pc-windows-msvc --workspace --release` | Passed; actual optimized MSVC-target Windows executable linked |
+| `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=wine WINEDEBUG=-all /tmp/ns2-windows-tools/bin/cargo-xwin test --target x86_64-pc-windows-msvc --workspace` | **53 passed, 0 failed**, 2 opt-in measurements ignored in this invocation |
+| `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=wine WINEDEBUG=-all /tmp/ns2-windows-tools/bin/cargo-xwin test --release --target x86_64-pc-windows-msvc -p ns2pro-bridge --test linux_latency -- --ignored --nocapture --test-threads=1` | **2 passed, 0 failed**; both previously ignored measurements executed explicitly |
+| `cargo fmt --all -- --check`; `git diff --check` | Passed |
+
+The 53 ordinary tests comprise 13 bridge/native/CLI, 3 shared lifecycle, 7 primary
+session, 27 protocol and 3 golden fixture tests. This includes the deterministic
+late-callback-after-neutral regression. All 55 distinct test cases were therefore
+executed across the ordinary suite and explicit measurement invocation.
+
+Release measurements under Wine used 10,000 samples per case, after warmup, one
+test thread, paused Tokio time and in-memory transport:
+
+| Measured path | p50 | p99 | Maximum | Allocations / bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Pure BLE decode to encoded USB/IP response | 100 ns | 100 ns | 100 ns | 0 / 0 |
+| Fake GATT notification to in-memory USB/IP peer | 4,300 ns | 8,600 ns | 102,500 ns | 0 / 0 |
+
+These are observed Wine-host timings, subject to its timer resolution and host
+scheduling. They do not measure real Windows scheduling, WinRT callback latency,
+wireless latency, usbip-win2 driver performance, or game latency.
+
+`file` identifies the linked release artifact as a PE32+ x86-64 console executable.
+Its SHA-256 in this build is
+`92d047a4fa78b10401ca775dbda27f1d45e8b11ac1be66f3bfd86ed7838fb9f0`.
+Under Wine, release `--version` and `--help` both exited 0; version output was
+`ns2pro-bridge 0.2.0`. Release `--bt-smoke-test` emitted the new executable-path and
+version startup log, then exited 1 with Bluetooth `E_NOTIMPL (0x80004001)` because
+Wine does not implement the adapter API used here. A successful Bluetooth scan is
+not claimed, and the controller-connection milestone requires real Bluetooth.
+
+**Native Windows CI remains unverified until a remote Windows run.** No physical
+Windows Bluetooth/controller tests, usbip-win2 kernel-driver attach, or Windows
+hardware acceptance were performed. The Linux hardware fix is present in the
+revision but its Linux-specific readiness behavior is not exercised by these
+Windows-target tests. No push, main merge, issue closure, publication or extra
+agents/workspaces were involved in this validation.
