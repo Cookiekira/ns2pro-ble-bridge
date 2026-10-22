@@ -63,7 +63,7 @@ pub async fn attempt<B: Bluetooth>(
     };
     channels.rumble.send_replace(None);
     let setup = async {
-        let controller = Controller::new(&link).await?;
+        let mut controller = Controller::new(&link).await?;
         controller
             .initialize(channels, options.feature_flags)
             .await?;

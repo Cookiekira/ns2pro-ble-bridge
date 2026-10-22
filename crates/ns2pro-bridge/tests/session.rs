@@ -139,7 +139,7 @@ fn report() -> [u8; 60] {
 async fn complete_session_notification_to_usb_and_outputs() {
     let link = Fake::default();
     let channels = Channels::default();
-    let controller = Controller::new(&link).await.unwrap();
+    let mut controller = Controller::new(&link).await.unwrap();
     controller.initialize(&channels, 7).await.unwrap();
     controller
         .pair(
@@ -265,7 +265,7 @@ async fn pairing_reject_and_calibration_fallback() {
     let link = Fake::default();
     link.data.lock().unwrap().bad_calibration = true;
     let channels = Channels::default();
-    let controller = Controller::new(&link).await.unwrap();
+    let mut controller = Controller::new(&link).await.unwrap();
     controller.initialize(&channels, 7).await.unwrap();
     link.notify(&report());
     assert_eq!(channels.input.borrow().state.left_stick.x, 0x123);
@@ -340,7 +340,7 @@ async fn rumble_leading_edge_latest_value_twenty_ms_and_setup_output_replay() {
     use ns2pro_usb::Output;
     let link = Fake::default();
     let channels = Channels::default();
-    let controller = Controller::new(&link).await.unwrap();
+    let mut controller = Controller::new(&link).await.unwrap();
     controller.initialize(&channels, 7).await.unwrap();
     // Host outputs arriving after initialize but before output loops must survive.
     channels.output(Output::PlayerLeds(9));
@@ -549,7 +549,7 @@ async fn forget_device_and_bounded_cancellable_backoff() {
 async fn late_notification_cannot_overwrite_neutral_after_disconnect() {
     let link = Fake::default();
     let channels = Channels::default();
-    let controller = Controller::new(&link).await.unwrap();
+    let mut controller = Controller::new(&link).await.unwrap();
     controller.initialize(&channels, 7).await.unwrap();
     link.notify(&report());
     assert_ne!(channels.input.borrow().state.buttons, Default::default());

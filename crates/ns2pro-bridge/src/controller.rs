@@ -12,7 +12,7 @@ use ns2pro_proto::{
     pairing::{Pairing, PairingError},
 };
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerError {
@@ -29,7 +29,7 @@ pub enum ControllerError {
 }
 pub struct Controller<'a, L: GattLink> {
     link: &'a L,
-    responses: Mutex<mpsc::Receiver<Vec<u8>>>,
+    responses: mpsc::Receiver<Vec<u8>>,
 }
 impl<L: GattLink> std::fmt::Debug for Controller<'_, L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -49,11 +49,12 @@ impl<'a, L: GattLink> Controller<'a, L> {
         .await?;
         Ok(Self {
             link,
-            responses: Mutex::new(rx),
+            responses: rx,
         })
     }
-    pub async fn command(&self, request: &[u8]) -> Result<Vec<u8>, ControllerError> {
-        let mut responses = self.responses.lock().await;
+    async fn command(&mut self, request: &[u8]) -> Result<Vec<u8>, ControllerError> {
+        // Exclusive ownership serializes commands without a runtime lock.
+        let responses = &mut self.responses;
         while responses.try_recv().is_ok() {}
         let closed = self.link.closed();
         let transaction = async {
@@ -64,7 +65,11 @@ impl<'a, L: GattLink> Controller<'a, L> {
         };
         tokio::select! {_=closed.cancelled()=>Err(LinkError::Closed.into()),result=tokio::time::timeout(Duration::from_secs(2),transaction)=>result.map_err(|_|ControllerError::Link(LinkError::Timeout))?}
     }
-    pub async fn initialize(&self, channels: &Channels, flags: u8) -> Result<(), ControllerError> {
+    pub async fn initialize(
+        &mut self,
+        channels: &Channels,
+        flags: u8,
+    ) -> Result<(), ControllerError> {
         self.command(&command::set_player_leds(*channels.leds.borrow()))
             .await?;
         let mut blocks = Vec::new();
@@ -121,7 +126,7 @@ impl<'a, L: GattLink> Controller<'a, L> {
         Ok(())
     }
     pub async fn pair(
-        &self,
+        &mut self,
         host: Address,
         key: [u8; 16],
         challenge: [u8; 16],
@@ -133,7 +138,7 @@ impl<'a, L: GattLink> Controller<'a, L> {
         Ok(())
     }
     pub async fn run(
-        &self,
+        &mut self,
         channels: &Channels,
         cancel: &CancellationToken,
     ) -> Result<(), ControllerError> {
@@ -141,6 +146,7 @@ impl<'a, L: GattLink> Controller<'a, L> {
         let mut rumble = channels.rumble.subscribe();
         let closed = self.link.closed();
         // Leading edge: the first fresh output writes immediately; only latest pending state survives.
+        let link = self.link;
         let rumble_task = async {
             let mut next = tokio::time::Instant::now();
             loop {
@@ -150,12 +156,11 @@ impl<'a, L: GattLink> Controller<'a, L> {
                     value = *rumble.borrow_and_update();
                 }
                 if let Some(v) = value {
-                    self.link
-                        .write(
-                            Characteristic::Vibration,
-                            &command::rumble_packet(&v.left, &v.right),
-                        )
-                        .await?;
+                    link.write(
+                        Characteristic::Vibration,
+                        &command::rumble_packet(&v.left, &v.right),
+                    )
+                    .await?;
                     channels.stats.lock().unwrap().rumble_writes += 1;
                     next = tokio::time::Instant::now() + Duration::from_millis(20);
                 }
