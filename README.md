@@ -71,8 +71,6 @@ Exit codes: `0` normal, `1` runtime failure, `2` bad arguments or USB setup fail
 - **Disconnects:** buttons and sticks return to neutral immediately. The bridge reconnects automatically, restores player LEDs and drops old rumble.
 - **Tested hardware:** Linux x64 with a MediaTek MT7922 adapter. arm64 and Windows: CI only.
 
-Evidence and limits: [hardware checklist](docs/linux-hardware-checklist.md), [Linux details](docs/rust-linux-implementation.md), [integration record](docs/rust-integration-validation.md), [Windows record](docs/windows-native-validation.md).
-
 ## Build from source
 
 ```sh

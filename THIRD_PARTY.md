@@ -6,15 +6,13 @@ contributors, under GPL-3.0. The reference revision recorded by the former gitli
 is `70e533386271ef3f28a2e0ce0235ab0060d8c336` in
 [Cookiekira/VIIPER](https://github.com/Cookiekira/VIIPER). Its license is retained
 in [LICENSES/VIIPER-GPL-3.0.txt](LICENSES/VIIPER-GPL-3.0.txt). The exported bytes
-remain in `fixtures/viiper`; the Rust golden tests preserve the byte contracts.
+remain in `crates/ns2pro-usb/tests/fixtures/viiper`; the Rust golden tests preserve the byte contracts.
 No VIIPER runtime or build dependency is required.
 
 The NS2Pro protocol and pairing exchange were ported from this project's original
 C# implementation, informed by
 [switch2_controller_research](https://github.com/ndeadly/switch2_controller_research).
 Native Windows driver wire layouts follow
-[usbip-win2](https://github.com/vadimgrn/usbip-win2); see
-[Windows implementation evidence](docs/windows-native-validation.md) for supported
-released ABI versions and primary source links.
+[usbip-win2](https://github.com/vadimgrn/usbip-win2) released ABIs v0.9.6.1–v0.9.8.1.
 
 This project is GPL-3.0-or-later; see [LICENSE.txt](LICENSE.txt).

@@ -1,9 +1,2 @@
-bin/
-obj/
-dist/
-*.pdb
-*.user
-.vs/
-.idea/
-*.log
 target/
+*.log
