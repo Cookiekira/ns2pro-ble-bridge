@@ -108,19 +108,7 @@ impl WindowsBluetooth {
         for adapter in adapters {
             tracing::info!(id = %adapter.Id().map_err(ble)?, name = %adapter.Name().map_err(ble)?, "Bluetooth adapter");
         }
-        let mut scope = Watcher {
-            watcher: BluetoothLEAdvertisementWatcher::new().map_err(ble)?,
-            received: None,
-            stopped: None,
-        };
-        scope
-            .watcher
-            .SetScanningMode(BluetoothLEScanningMode::Active)
-            .map_err(ble)?;
-        scope
-            .watcher
-            .SetAllowExtendedAdvertisements(true)
-            .map_err(ble)?;
+        let mut scope = Watcher::new()?;
         let observed = Arc::new(AtomicU64::new(0));
         let callback_observed = observed.clone();
         scope.received = Some(
@@ -177,6 +165,24 @@ struct Watcher {
     received: Option<i64>,
     stopped: Option<i64>,
 }
+impl Watcher {
+    fn new() -> Result<Self, BleError> {
+        let scope = Self {
+            watcher: BluetoothLEAdvertisementWatcher::new().map_err(ble)?,
+            received: None,
+            stopped: None,
+        };
+        scope
+            .watcher
+            .SetScanningMode(BluetoothLEScanningMode::Active)
+            .map_err(ble)?;
+        scope
+            .watcher
+            .SetAllowExtendedAdvertisements(true)
+            .map_err(ble)?;
+        Ok(scope)
+    }
+}
 impl Drop for Watcher {
     fn drop(&mut self) {
         if let Some(token) = self.received.take() {
@@ -191,19 +197,7 @@ impl Drop for Watcher {
 impl Bluetooth for WindowsBluetooth {
     type Link = WindowsGattLink;
     async fn scan(&self, target: Option<Address>) -> Result<Discovered, BleError> {
-        let mut scope = Watcher {
-            watcher: BluetoothLEAdvertisementWatcher::new().map_err(ble)?,
-            received: None,
-            stopped: None,
-        };
-        scope
-            .watcher
-            .SetScanningMode(BluetoothLEScanningMode::Active)
-            .map_err(ble)?;
-        scope
-            .watcher
-            .SetAllowExtendedAdvertisements(true)
-            .map_err(ble)?;
+        let mut scope = Watcher::new()?;
         let (tx, mut rx) = mpsc::channel(1);
         let stopped_tx = tx.clone();
         scope.received = Some(
@@ -244,11 +238,17 @@ impl Bluetooth for WindowsBluetooth {
                 ))
                 .map_err(ble)?,
         );
-        scope.stopped = Some(scope.watcher.Stopped(&TypedEventHandler::new(move |_, args: Ref<BluetoothLEAdvertisementWatcherStoppedEventArgs>| {
-            let reason = args.as_ref().and_then(|a| a.Error().ok());
-            let _ = stopped_tx.try_send(Err(BleError::Platform(format!("Bluetooth scan stopped: {reason:?}; check adapter power and Bluetooth permissions"))));
-            Ok(())
-        })).map_err(ble)?);
+        scope.stopped = Some(
+            scope.watcher.Stopped(&TypedEventHandler::new(
+                move |_, args: Ref<BluetoothLEAdvertisementWatcherStoppedEventArgs>| {
+                    let reason = args.as_ref().and_then(|a| a.Error().ok());
+                    let _ = stopped_tx.try_send(Err(BleError::Platform(format!(
+                        "Bluetooth scan stopped: {reason:?}; check adapter power and Bluetooth permissions"
+                    ))));
+                    Ok(())
+                },
+            )).map_err(ble)?,
+        );
         scope.watcher.Start().map_err(ble)?;
         tokio::time::timeout(Duration::from_secs(30), rx.recv())
             .await
@@ -283,6 +283,7 @@ impl Bluetooth for WindowsBluetooth {
         let mut resources = Resources {
             device,
             services: Vec::new(),
+            characteristics: HashMap::new(),
             subscriptions: Vec::new(),
             status: None,
             preference: None,
@@ -376,9 +377,9 @@ impl Bluetooth for WindowsBluetooth {
             ),
             Err(error) => tracing::info!(%error, "Observed BLE connection interval: unknown"),
         }
+        resources.characteristics = discovered;
         Ok(WindowsGattLink {
             resources: RefCell::new(Some(resources)),
-            characteristics: RefCell::new(discovered),
             closed,
         })
     }
@@ -406,12 +407,14 @@ impl Drop for Subscription {
 struct Resources {
     device: BluetoothLEDevice,
     services: Vec<GattDeviceService>,
+    characteristics: HashMap<Characteristic, GattCharacteristic>,
     subscriptions: Vec<Subscription>,
     status: Option<i64>,
     preference: Option<BluetoothLEPreferredConnectionParametersRequest>,
 }
 impl Drop for Resources {
     fn drop(&mut self) {
+        self.characteristics.clear();
         self.subscriptions.clear();
         if let Some(token) = self.status.take() {
             let _ = self.device.RemoveConnectionStatusChanged(token);
@@ -427,7 +430,6 @@ impl Drop for Resources {
 }
 pub struct WindowsGattLink {
     resources: RefCell<Option<Resources>>,
-    characteristics: RefCell<HashMap<Characteristic, GattCharacteristic>>,
     closed: CancellationToken,
 }
 impl std::fmt::Debug for WindowsGattLink {
@@ -438,13 +440,18 @@ impl std::fmt::Debug for WindowsGattLink {
     }
 }
 impl WindowsGattLink {
+    fn release(&self) {
+        self.closed.cancel();
+        self.resources.borrow_mut().take();
+    }
     fn characteristic(&self, kind: Characteristic) -> Result<GattCharacteristic, LinkError> {
         if self.closed.is_cancelled() {
             return Err(LinkError::Closed);
         }
-        self.characteristics
+        self.resources
             .borrow()
-            .get(&kind)
+            .as_ref()
+            .and_then(|resources| resources.characteristics.get(&kind))
             .cloned()
             .ok_or(LinkError::Closed)
     }
@@ -458,7 +465,9 @@ impl GattLink for WindowsGattLink {
         let status = tokio::select! {
             biased;
             _ = self.closed.cancelled() => return Err(LinkError::Closed),
-            result = async { winrt!(characteristic.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithoutResponse), link) } => result?,
+            result = async {
+                winrt!(characteristic.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithoutResponse), link)
+            } => result?,
         };
         check_status(status, "WriteWithoutResponse")
     }
@@ -508,7 +517,9 @@ impl GattLink for WindowsGattLink {
         let status = tokio::select! {
             biased;
             _ = self.closed.cancelled() => return Err(LinkError::Closed),
-            result = async { winrt!(characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue::Notify), link) } => result?,
+            result = async {
+                winrt!(characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue::Notify), link)
+            } => result?,
         };
         check_status(status, "enable notifications")?;
         self.resources
@@ -523,16 +534,12 @@ impl GattLink for WindowsGattLink {
         self.closed.clone()
     }
     async fn close(&self) {
-        self.closed.cancel();
-        self.characteristics.borrow_mut().clear();
-        self.resources.borrow_mut().take();
+        self.release();
     }
 }
 impl Drop for WindowsGattLink {
     fn drop(&mut self) {
-        self.closed.cancel();
-        self.characteristics.get_mut().clear();
-        self.resources.get_mut().take();
+        self.release();
     }
 }
 
