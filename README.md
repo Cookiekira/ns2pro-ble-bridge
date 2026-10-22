@@ -35,10 +35,11 @@ connecting. `bluetoothd` may run alongside the bridge; actual coexistence still
 needs the hardware checks below.
 
 For a non-root manual server, grant Bluetooth management permission to the built
-executable (reapply after replacing it):
+executable (reapply after replacing it). CAP_NET_RAW enables the optional live
+7.5 ms request; with only CAP_NET_ADMIN, Bluetooth still works at system parameters:
 
 ```sh
-sudo setcap cap_net_admin+ep ./target/release/ns2pro-ble-bridge
+sudo setcap cap_net_admin,cap_net_raw+ep ./target/release/ns2pro-ble-bridge
 ./target/release/ns2pro-ble-bridge --no-auto-attach --usb-addr 0.0.0.0:3241
 ```
 
@@ -121,12 +122,22 @@ interarrival variation, receipt-to-USB-write p50/p99, input URB rate, keepalives
 rumble writes. These measurements exclude wireless transit and host consumption.
 
 The target is 5 ms BLE only on a verified adapter/firmware-specific path; **no such
-path is implemented or verified**. Standard 7.5 ms is the specified Linux fallback,
-but mgmt preference writes cannot safely restore unknown shared state on the
-examined kernel. This implementation logs the unavailable optimization and connects
-with system-allowed parameters; the fallback-request acceptance item remains open.
-Windows requests ThroughputOptimized best-effort. Actual intervals remain unknown
-without native events/HCI evidence; report rates are not interval measurements.
+path is implemented or verified**. Linux now makes one best-effort standard
+7.5 ms request on the connected ATT channel's HCI handle, without changing saved
+connection preferences. A socket-local observer starts before connection and
+checks peer, address type, central role, handle and disconnect/reuse events. The
+request needs CAP_NET_RAW (already available when run as root); unavailable
+permissions, refusal or a two-second observation timeout continue normal setup.
+Logs distinguish `requested_interval_ms` from `observed_interval_ms`; only a
+matching successful LE update event confirms the observed value. Command Status
+and report rate do not prove the actual interval.
+
+Linux exposes no atomic fd-bound HCI update: a disconnect/handle reuse between
+validation and queued command execution remains possible despite these checks.
+Other channels on the same peer share this ACL and its interval; other managers
+may subsequently change it. There is one attempt per connection, no retry fight,
+no stale rollback, and no monitoring claim after startup. Actual hardware acceptance
+of 7.5 ms remains pending. Windows requests ThroughputOptimized best-effort.
 
 Tests compare all exported USB fixture scenarios and supported descriptors, with
 explicit STALL/pending bulk/UNLINK differences. Fake GATT plus an in-memory USB/IP

@@ -1,5 +1,6 @@
 //! Linux native Bluetooth: HCI management discovery and non-SMP fixed-CID ATT.
 mod att_link;
+mod interval;
 mod mgmt;
 mod socket;
 use crate::ble::{BleError, Bluetooth, Discovered};
@@ -60,15 +61,6 @@ impl Bluetooth for LinuxBluetooth {
             .ok_or(BleError::Timeout)
     }
     async fn connect(&self, target: &Discovered) -> Result<AttLink, BleError> {
-        // Generic LOAD_CONN_PARAM has no safe read/compare/restore operation. It can
-        // clear other devices' disabled entries when this device is not present.
-        // Do not mutate unknown shared kernel preferences (see native-linux.md).
-        tracing::warn!(
-            target_ms = 7.5,
-            preference = "unavailable: kernel has no ownership-safe restore",
-            observed_interval = "unknown",
-            "connecting with system-allowed LE parameters; no verified 5ms adapter path"
-        );
         Management::disconnect_existing(
             self.index,
             ns2pro_proto::mgmt::Device {
@@ -77,6 +69,16 @@ impl Bluetooth for LinuxBluetooth {
             },
         )
         .await?;
+        // Observe before connect so the handle is tied to a fresh peer epoch.
+        // Missing CAP_NET_RAW is an optional-optimization failure, not a BLE failure.
+        let observer = match socket::Socket::hci(self.index) {
+            Ok(observer) => Some(observer),
+            Err(error) => {
+                tracing::warn!(%error, requested_interval_ms=7.5,
+                    "LE interval request unavailable (needs CAP_NET_RAW); continuing input");
+                None
+            }
+        };
         tracing::debug!(address=%target.address, "opening raw ATT connection");
         let socket = timeout(
             Duration::from_secs(10),
@@ -84,6 +86,16 @@ impl Bluetooth for LinuxBluetooth {
         )
         .await
         .map_err(|_| BleError::Timeout)??;
+        if let Some(observer) = observer
+            && let Err(error) =
+                interval::request(&observer, target.address, target.address_type, || {
+                    socket.att_handle(self.address, target.address, target.address_type)
+                })
+                .await
+        {
+            tracing::warn!(%error, requested_interval_ms=7.5,
+                    "LE interval optimization unconfirmed; continuing with negotiated parameters");
+        }
         tracing::debug!(address=%target.address, "raw ATT connected; discovering GATT");
         let link = AttLink::open(socket)
             .await

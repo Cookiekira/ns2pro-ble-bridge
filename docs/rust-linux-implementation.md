@@ -48,19 +48,44 @@ only; implementation and commits are confined to the Linux worktree.
 The bridge uses the shared session, channel and USB/IP stack. It has no D-Bus,
 BlueZ subprocess, usbip subprocess, C# interop or Go runtime dependency.
 
-## Connection preference limitation
+## Live connection interval request
 
-Target: 7.5 ms (standard interval min/max 6/6, latency 0, supervision timeout 200).
-**No preference is sent on the current generic path.** It logs the unavailable
-optimization and continues with system-allowed parameters. Observed interval is
-reported as `unknown`; report arrival frequency is never used as interval proof.
-No PC adapter/firmware-specific 5 ms mechanism has been verified here. In
-particular, generic interval 4 is never sent.
+The integration now attempts standard HCI LE Connection Update (0x2013) once per
+connection: interval min/max 6/6 (7.5 ms), latency 0, supervision timeout 200
+(2000 ms), CE min/max 0. This is non-persistent; LOAD_CONN_PARAM remains unused.
+There is no verified PC 5 ms path, and generic interval 4 is never sent.
 
-This limitation is deliberate and was agreed during implementation: do not
-mutate unknown shared kernel preferences destructively. The codec and byte test
-for a one-device standard request remain available for a future ownership-safe
-mechanism.
+A raw HCI socket on the selected adapter opens before ATT connect, filtered locally
+to LE Meta, Disconnect Complete and command responses. It does not set controller
+masks or take HCI_CHANNEL_USER. The connected ATT fd supplies L2CAP_CONNINFO's
+native-endian handle; getpeername/getsockname verify both ATT endpoints. Queued
+connection events must match the peer/address type, central role and handle.
+Disconnect/replacement events invalidate that epoch. The fd is rechecked before
+submission and while observing the result. The whole optional operation has a
+two-second deadline; errors are logged and GATT setup continues. CAP_NET_RAW is
+needed in addition to management's CAP_NET_ADMIN; no capabilities are installed
+automatically.
+
+The initial Connection Complete event logs the pre-request interval. A matching
+successful LE Connection Update Complete logs the actual observed interval,
+latency and supervision timeout separately from the requested 7.5 ms. Status
+success alone, unrelated handles, and report rate never count as interval proof.
+A different negotiated interval is reported honestly. This observer ends after
+startup; later changes by another manager are not tracked.
+
+**Residual concurrency limitation:** userspace validation does not atomically pin
+the numeric controller handle across HCI queue execution. A remote disconnect and
+reuse in that gap can affect a different connection. This is a best-effort path,
+not a strict ownership guarantee. Broadcast command statuses lack requester IDs;
+observed updates do not prove exclusive causation. Same-peer L2CAP channels share
+the ACL/interval, and closing ATT need not end that ACL. Do not retry or restore a
+stale handle. There are no saved-preference changes to undo.
+
+Sources: [BlueZ's standard update helper](https://github.com/bluez/bluez/blob/7bc9684dc9e45358661301da4a0ede433fdf0a30/lib/bluetooth/hci.c#L3069),
+[Linux ATT connection-info socket option](https://github.com/torvalds/linux/blob/7be4bc52fd9e0e55dc9a2e0232b89427d2c4b614/net/bluetooth/l2cap_sock.c#L548),
+and [Linux live update handling](https://github.com/torvalds/linux/blob/7be4bc52fd9e0e55dc9a2e0232b89427d2c4b614/net/bluetooth/hci_event.c#L6114).
+
+## Why saved preference writes remain disabled
 
 Kernel source reviewed at
 [Linux 4403278e4ea2, load_conn_param](https://github.com/torvalds/linux/blob/4403278e4ea2f654f8130a5c03eb8b4516a0f201/net/bluetooth/mgmt.c)
@@ -78,7 +103,9 @@ startup cannot reconstruct state already present before startup or provide atomi
 cleanup against concurrent managers. No existing-device-safe restore path was
 found in these interfaces.
 
-The preference/verified-5-ms hardware acceptance items therefore remain open.
+Hardware acceptance of the live 7.5 ms request and a verified 5 ms path remains open.
+The previous conclusion that no generic request was possible was too broad: the
+standard live HCI update avoids the saved-preference mutation described above.
 
 A separate kernel wire detail found by the real smoke run is handled explicitly:
 [hci_mgmt_cmd](https://github.com/torvalds/linux/blob/4403278e4ea2f654f8130a5c03eb8b4516a0f201/net/bluetooth/hci_sock.c)
@@ -172,3 +199,29 @@ Still needed, with an available controller and authorized hardware access:
 No Linux hardware acceptance beyond enumeration is claimed. No Windows hardware
 acceptance is claimed. See the existing Linux hardware checklist for the full
 interactive acceptance procedure; this record does not check those boxes.
+
+## 2026-10-22 live interval implementation checks
+
+The focused fake-HCI test first failed with the old unavailable-request behavior
+(no command reached the peer within its one-second deadline), then passed after
+wiring the live request. Six interval tests cover the exact 18-byte HCI packet,
+matching actual updates, unrelated handles/statuses, initial legacy/enhanced/v2
+connection events, resolved address-type mapping, malformed/truncated packets,
+wrong peer/role/type/handle, stale disconnect/reuse, fd query failure/change,
+refusal, missing completion, reconnect and negotiated values other than 7.5 ms.
+Failure tests keep a separate ATT socket usable. A seventh test checks the native
+sockaddr/filter/connection-info ABI sizes. These tests exercise the request with
+socketpair peers and injected live-handle snapshots, not a Bluetooth controller.
+
+Validation: locked workspace tests 65 passed, 0 failed, 2 optional measurements
+intentionally ignored; Linux and Windows-target workspace/all-target strict
+Clippy passed; formatting, diff whitespace checks, Linux optimized release build
+and release `--version` passed. No hot-path performance claims are changed.
+
+No privileged hardware update was executed: `sudo -n true` requires a password
+in this terminal. The built integration release is ready for a user-operated
+restart with the existing test cache. Require a new successful LE update event
+showing `observed_interval_ms=7.5` before claiming the radio delay is improved.
+Previous 48.75 ms capture remains the baseline, not evidence for this change.
+No kernel virtual-HCI handle-reuse test was run; the queue race documented above
+is an unresolved UAPI limitation and is not certified away by fake tests.

@@ -8,7 +8,7 @@ unchecked unless individually evidenced; see [integration evidence](rust-integra
 
 ## Prerequisites
 
-- [ ] Root for auto-attach, or CAP_NET_ADMIN for `--no-auto-attach` Bluetooth.
+- [ ] Root for auto-attach, or CAP_NET_ADMIN for `--no-auto-attach` Bluetooth; add CAP_NET_RAW for the live interval request.
 - [ ] A usable LE adapter; `vhci-hcd` loaded for local auto-attach.
 - [ ] No other active controller session. Bluetoothd is optional, not a dependency.
 
@@ -35,7 +35,7 @@ unchecked unless individually evidenced; see [integration evidence](rust-integra
 ## Timing and architecture
 
 - [x] Captured Nintendo LE connection event: 48.75 ms, latency 0, supervision 420 ms. Recheck after any connection-parameter change.
-- [ ] Reconcile Linux's ownership-safe preference limitation before claiming standard 7.5 ms request acceptance.
+- [ ] Capture standard HCI 0x2013 (6/6 interval) and matching successful LE update with observed 7.5 ms; implementation alone is not hardware acceptance. Check logs for the absolute release executable path.
 - [ ] Rejection of optimization allows system-parameter connection to continue.
 - [ ] Verified 5 ms hardware path: currently unavailable; do not send generic interval 4.
 - [ ] Verify controller IMU timestamp semantics or retain monotonic receipt fallback.
