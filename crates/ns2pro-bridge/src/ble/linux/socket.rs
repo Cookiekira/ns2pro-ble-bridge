@@ -172,6 +172,14 @@ impl Socket {
         }
     }
     pub(super) async fn send(&self, p: &[u8]) -> io::Result<()> {
+        self.send_packet(p, false).await
+    }
+    // hci_mgmt_cmd returns zero after queueing some early Command Status failures
+    // (notably Permission Denied). The packet was consumed; read its status.
+    pub(super) async fn send_management(&self, p: &[u8]) -> io::Result<()> {
+        self.send_packet(p, true).await
+    }
+    async fn send_packet(&self, p: &[u8], management: bool) -> io::Result<()> {
         loop {
             let mut guard = self.0.writable().await?;
             match guard.try_io(|fd| {
@@ -186,7 +194,7 @@ impl Socket {
                 };
                 if n < 0 {
                     Err(io::Error::last_os_error())
-                } else if n as usize != p.len() {
+                } else if n as usize != p.len() && !(management && n == 0) {
                     Err(io::Error::new(
                         io::ErrorKind::WriteZero,
                         "partial Bluetooth packet write",

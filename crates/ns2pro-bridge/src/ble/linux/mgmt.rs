@@ -42,7 +42,7 @@ impl Management {
     ) -> Result<(u8, Vec<u8>), BleError> {
         let p =
             mgmt::command(opcode, index, payload).map_err(|e| BleError::Platform(e.to_string()))?;
-        self.socket.send(&p).await?;
+        self.socket.send_management(&p).await?;
         timeout(Duration::from_secs(5), async {
             loop {
                 let p = self.receive().await?;
