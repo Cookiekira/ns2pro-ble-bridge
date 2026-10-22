@@ -69,6 +69,7 @@ pub async fn attempt<B: Bluetooth>(
                     .map_err(|e| ControllerError::Random(e.to_string()))?;
                 controller.pair(host, key, challenge).await?;
                 paired = true;
+                tracing::info!(address=%target.address, "host pairing completed");
             }
             cache.save(target.address)?;
             channels.stats.lock().unwrap().connection = link.connection_report();
