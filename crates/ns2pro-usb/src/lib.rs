@@ -4,3 +4,4 @@ pub mod device;
 pub mod engine;
 pub mod usbip;
 pub use device::{InputSample, Ns2ProDevice, Output};
+pub mod usbip_win;

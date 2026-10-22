@@ -1,6 +1,7 @@
 //! Native usbip-win2 attach. All device discovery/IOCTL waits run on a blocking
 //! worker, leaving the shared USB/IP TCP listener responsive during import.
 use super::AttachError;
+use ns2pro_usb::usbip_win as wire;
 use std::{
     mem::size_of,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -31,8 +32,6 @@ use windows::{
     },
     core::{GUID, PCWSTR},
 };
-#[path = "usbip_win_wire.rs"]
-mod wire;
 
 const DEVICE_GUID: GUID = GUID::from_u128(0xb4030c06_dc5f_4fcc_87eb_e5515a0935c0);
 fn platform(error: impl std::fmt::Display) -> AttachError {
@@ -241,23 +240,17 @@ impl Attached {
         let worker_stop = stop.clone();
         let (ready_tx, ready_rx) = oneshot::channel();
         let worker = tokio::task::spawn_blocking(move || {
-            if worker_stop.is_cancelled() {
-                let _ = ready_tx.send(Err(AttachError::Cancelled));
-                return Ok(());
-            }
-            let handle = match open_driver() {
-                Ok(handle) => handle,
-                Err(error) => {
-                    let error = if worker_stop.is_cancelled() {
+            let imported = (|| {
+                if worker_stop.is_cancelled() {
+                    return Err(AttachError::Cancelled);
+                }
+                let handle = open_driver().map_err(|error| {
+                    if worker_stop.is_cancelled() {
                         AttachError::Cancelled
                     } else {
                         error
-                    };
-                    let _ = ready_tx.send(Err(error));
-                    return Ok(());
-                }
-            };
-            let imported = (|| {
+                    }
+                })?;
                 for abi in wire::Abi::SUPPORTED {
                     let mut request = wire::plugin(address, abi).map_err(platform)?;
                     match ioctl(
@@ -267,7 +260,10 @@ impl Attached {
                         wire::PORT_END as u32,
                         &worker_stop,
                     ) {
-                        Ok(bytes) => return wire::attached_port(&request, bytes).map_err(platform),
+                        Ok(bytes) => {
+                            let port = wire::attached_port(&request, bytes).map_err(platform)?;
+                            return Ok((handle, port));
+                        }
                         Err(error) if size_rejected(&error) => continue,
                         Err(AttachError::Cancelled) => return Err(AttachError::Cancelled),
                         Err(error) => return Err(platform(error)),
@@ -275,8 +271,8 @@ impl Attached {
                 }
                 Err(platform("usbip-win2 rejected every supported request size"))
             })();
-            let port = match imported {
-                Ok(port) => port,
+            let (handle, port) = match imported {
+                Ok(imported) => imported,
                 Err(error) => {
                     let _ = ready_tx.send(Err(error));
                     return Ok(());
@@ -286,9 +282,7 @@ impl Attached {
             let delivered = ready_tx.send(Ok(())).is_ok();
             if delivered {
                 tracing::info!(port, %address, "Attached virtual USB device through usbip-win2");
-                while !worker_stop.is_cancelled() {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
+                futures::executor::block_on(worker_stop.cancelled());
             }
             detach_port(&handle, port)
         });
