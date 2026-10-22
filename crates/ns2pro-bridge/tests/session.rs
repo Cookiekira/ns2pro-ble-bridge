@@ -525,16 +525,70 @@ async fn forget_device_and_bounded_cancellable_backoff() {
     let (result, ()) = tokio::join!(supervise(&bluetooth, &options, &channels, &cancel), driver);
     result.unwrap();
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn late_notification_cannot_overwrite_neutral_after_disconnect() {
-    let link = FakeController::default();
+    use clap::Parser;
+    use ns2pro_bridge::{cache::Cache, cli::Options, session::attempt};
+    let cache = TestCache::new();
+    let attempt_cache = Cache::new(cache.path());
+    let options = Options::parse_from(["bridge", "--device-address", "12:34:56:78:9A:BC"]);
+    let connection_report = ConnectionReport {
+        target: ConnectionTarget::Interval(6),
+        ..Default::default()
+    };
+    let bluetooth = FakeController::new(FakeOptions {
+        report: connection_report,
+        ..Default::default()
+    });
     let channels = Channels::default();
-    let mut controller = Controller::new(&link).await.unwrap();
-    controller.initialize(&channels, 7).await.unwrap();
-    link.notify(&report());
-    assert_ne!(channels.input.borrow().state.buttons, Default::default());
-    link.closed().cancel();
-    channels.neutral();
-    link.notify(&report());
+    let callback_channels = channels.clone();
+    bluetooth.on_close(move |mut input| {
+        let neutral = *callback_channels.input.borrow();
+        assert_eq!(neutral.state, Default::default());
+        assert_eq!(neutral.motion_timestamp_us, 0);
+        assert_eq!(*callback_channels.rumble.borrow(), None);
+        assert_eq!(
+            callback_channels.stats.lock().unwrap().connection_report(),
+            ConnectionReport::default()
+        );
+        input(&report());
+        assert_eq!(*callback_channels.input.borrow(), neutral);
+    });
+    let cancel = CancellationToken::new();
+    let driver = async {
+        for _ in 0..100 {
+            if cache.path().exists() && bluetooth.ready() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(cache.path().exists());
+        assert_eq!(
+            channels.stats.lock().unwrap().connection_report(),
+            connection_report
+        );
+        bluetooth.notify(&report());
+        assert_ne!(channels.input.borrow().state.buttons, Default::default());
+        channels.output(ns2pro_usb::Output::Rumble {
+            left: [1; 16],
+            right: [2; 16],
+        });
+        cancel.cancel();
+    };
+    let (outcome, ()) = tokio::join!(
+        attempt(
+            &bluetooth,
+            &options,
+            &channels,
+            &attempt_cache,
+            false,
+            &cancel
+        ),
+        driver
+    );
+    assert!(outcome.established);
+    assert!(outcome.result.is_err());
+    assert_eq!(bluetooth.observed().closes, 1);
     assert_eq!(channels.input.borrow().state, Default::default());
+    assert_eq!(*channels.rumble.borrow(), None);
 }

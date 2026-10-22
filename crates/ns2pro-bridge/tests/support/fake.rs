@@ -55,6 +55,7 @@ struct State {
     response: Option<NotificationSink>,
     key: [u8; 16],
     connections: Vec<CancellationToken>,
+    on_close: Option<Box<dyn FnOnce(NotificationSink) + Send>>,
 }
 #[derive(Clone, Default)]
 pub struct FakeController {
@@ -81,6 +82,9 @@ impl FakeController {
     }
     pub fn notify(&self, bytes: &[u8]) {
         self.state.lock().unwrap().input.as_mut().unwrap()(bytes);
+    }
+    pub fn on_close(&self, hook: impl FnOnce(NotificationSink) + Send + 'static) {
+        self.state.lock().unwrap().on_close = Some(Box::new(hook));
     }
     pub fn disconnect(&self, connection: usize) {
         self.state.lock().unwrap().connections[connection].cancel();
@@ -214,8 +218,13 @@ impl GattLink for FakeController {
         let mut s = self.state.lock().unwrap();
         s.observed.closes += 1;
         self.closed.cancel();
-        s.input = None;
+        let input = s.input.take();
+        let on_close = s.on_close.take();
         s.response = None;
+        drop(s);
+        if let Some(on_close) = on_close {
+            on_close(input.expect("input subscription before close hook"));
+        }
     }
 }
 pub fn address(n: u64) -> Address {
