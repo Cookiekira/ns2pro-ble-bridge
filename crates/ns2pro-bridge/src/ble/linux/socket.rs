@@ -2,9 +2,91 @@
 use ns2pro_proto::Address;
 use std::{
     io, mem,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
 };
 use tokio::io::unix::AsyncFd;
+const BTPROTO_L2CAP: i32 = 0;
+const BTPROTO_HCI: i32 = 1;
+const HCI_DEV_NONE: u16 = 0xffff;
+const HCI_CHANNEL_CONTROL: u16 = 3;
+const SOL_BLUETOOTH: i32 = 274;
+const BT_SECURITY: i32 = 4;
+const BT_SECURITY_LOW: u8 = 1;
+const ATT_CID: u16 = 4;
+const BDADDR_LE_PUBLIC: u8 = 1;
+
+fn bind<T>(fd: RawFd, address: &T) -> io::Result<()> {
+    // SAFETY: callers supply initialized Linux socket address structures, borrowed
+    // for this syscall only; the descriptor is owned by the caller.
+    let result = unsafe { libc::bind(fd, (address as *const T).cast(), mem::size_of::<T>() as _) };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+fn setsockopt<T>(fd: RawFd, level: i32, option: i32, value: &T) -> io::Result<()> {
+    // SAFETY: callers pair each option with its initialized native value type.
+    let result = unsafe {
+        libc::setsockopt(
+            fd,
+            level,
+            option,
+            (value as *const T).cast(),
+            mem::size_of::<T>() as _,
+        )
+    };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+fn getsockopt<T: Default>(fd: RawFd, level: i32, option: i32) -> io::Result<T> {
+    let mut value = T::default();
+    let mut len = mem::size_of::<T>() as libc::socklen_t;
+    // SAFETY: callers pair each option with writable native storage of its type.
+    let result =
+        unsafe { libc::getsockopt(fd, level, option, (&mut value as *mut T).cast(), &mut len) };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(value)
+    }
+}
+fn recv(fd: RawFd, p: &mut [u8]) -> io::Result<usize> {
+    // SAFETY: p is writable and fd remains valid for the syscall.
+    let n = unsafe { libc::recv(fd, p.as_mut_ptr().cast(), p.len(), libc::MSG_TRUNC) };
+    if n < 0 {
+        Err(io::Error::last_os_error())
+    } else if n as usize > p.len() {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated Bluetooth packet",
+        ))
+    } else {
+        Ok(n as usize)
+    }
+}
+fn send(fd: RawFd, p: &[u8]) -> io::Result<usize> {
+    // SAFETY: p is readable and MSG_NOSIGNAL prevents SIGPIPE.
+    let n = unsafe { libc::send(fd, p.as_ptr().cast(), p.len(), libc::MSG_NOSIGNAL) };
+    if n < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(n as usize)
+    }
+}
+fn check_write(n: usize, expected: usize) -> io::Result<()> {
+    if n != expected {
+        Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "partial Bluetooth packet write",
+        ))
+    } else {
+        Ok(())
+    }
+}
 #[derive(Debug)]
 pub(super) struct Socket(AsyncFd<OwnedFd>);
 #[repr(C)]
@@ -42,23 +124,13 @@ impl Socket {
         Ok(Self(unsafe { AsyncFd::register(fd)? }))
     }
     pub(super) fn management() -> io::Result<Self> {
-        let fd = Self::create(libc::SOCK_RAW, 1)?;
+        let fd = Self::create(libc::SOCK_RAW, BTPROTO_HCI)?;
         let address = HciAddress {
             family: libc::AF_BLUETOOTH as _,
-            device: 0xffff,
-            channel: 3,
+            device: HCI_DEV_NONE,
+            channel: HCI_CHANNEL_CONTROL,
         };
-        // SAFETY: address has Linux sockaddr_hci layout and is valid for the duration of bind.
-        let result = unsafe {
-            libc::bind(
-                fd.as_raw_fd(),
-                (&address as *const HciAddress).cast(),
-                mem::size_of_val(&address) as _,
-            )
-        };
-        if result < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        bind(fd.as_raw_fd(), &address)?;
         Self::from_owned(fd)
     }
     pub(super) async fn att(local: Address, remote: Address, address_type: u8) -> io::Result<Self> {
@@ -68,35 +140,22 @@ impl Socket {
                 "fresh LE address type required",
             ));
         }
-        let fd = Self::create(libc::SOCK_SEQPACKET, 0)?;
-        let security = [1u8, 0]; // struct bt_security { level = BT_SECURITY_LOW, key_size = 0 }
-        // SAFETY: security is a valid two-byte bt_security value.
-        if unsafe { libc::setsockopt(fd.as_raw_fd(), 274, 4, security.as_ptr().cast(), 2) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let fd = Self::create(libc::SOCK_SEQPACKET, BTPROTO_L2CAP)?;
+        let security = [BT_SECURITY_LOW, 0]; // struct bt_security { level, key_size }
+        setsockopt(fd.as_raw_fd(), SOL_BLUETOOTH, BT_SECURITY, &security)?;
         let local = L2capAddress {
             family: libc::AF_BLUETOOTH as _,
             psm: 0,
             address: local.to_le_bytes(),
-            cid: 4u16.to_le(),
-            address_type: 1,
+            cid: ATT_CID.to_le(),
+            address_type: BDADDR_LE_PUBLIC,
         };
-        // SAFETY: repr(C) matches sockaddr_l2; all fields initialized.
-        if unsafe {
-            libc::bind(
-                fd.as_raw_fd(),
-                (&local as *const L2capAddress).cast(),
-                mem::size_of_val(&local) as _,
-            )
-        } < 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        bind(fd.as_raw_fd(), &local)?;
         let remote = L2capAddress {
             family: libc::AF_BLUETOOTH as _,
             psm: 0,
             address: remote.to_le_bytes(),
-            cid: 4u16.to_le(),
+            cid: ATT_CID.to_le(),
             address_type,
         };
         // SAFETY: remote is a valid sockaddr_l2.
@@ -118,21 +177,7 @@ impl Socket {
     }
     async fn connected(&self) -> io::Result<()> {
         let mut ready = self.0.writable().await?;
-        let mut error: libc::c_int = 0;
-        let mut len = mem::size_of_val(&error) as libc::socklen_t;
-        // SAFETY: error and len are valid writable storage for SO_ERROR.
-        if unsafe {
-            libc::getsockopt(
-                self.fd(),
-                libc::SOL_SOCKET,
-                libc::SO_ERROR,
-                (&mut error as *mut libc::c_int).cast(),
-                &mut len,
-            )
-        } < 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        let error: libc::c_int = getsockopt(self.fd(), libc::SOL_SOCKET, libc::SO_ERROR)?;
         if error != 0 {
             return Err(io::Error::from_raw_os_error(error));
         }
@@ -152,64 +197,29 @@ impl Socket {
     pub(super) async fn recv(&self, p: &mut [u8]) -> io::Result<usize> {
         loop {
             let mut guard = self.0.readable().await?;
-            match guard.try_io(|fd| {
-                // SAFETY: p is writable, fd remains valid for the syscall.
-                let n = unsafe {
-                    libc::recv(
-                        fd.as_raw_fd(),
-                        p.as_mut_ptr().cast(),
-                        p.len(),
-                        libc::MSG_TRUNC,
-                    )
-                };
-                if n < 0 {
-                    Err(io::Error::last_os_error())
-                } else if n as usize > p.len() {
-                    Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "truncated Bluetooth packet",
-                    ))
-                } else {
-                    Ok(n as usize)
-                }
-            }) {
+            match guard.try_io(|fd| recv(fd.as_raw_fd(), p)) {
                 Ok(result) => return result,
                 Err(_) => continue,
             }
         }
     }
     pub(super) async fn send(&self, p: &[u8]) -> io::Result<()> {
-        self.send_packet(p, false).await
+        check_write(self.send_packet(p).await?, p.len())
     }
     // hci_mgmt_cmd returns zero after queueing some early Command Status failures
     // (notably Permission Denied). The packet was consumed; read its status.
     pub(super) async fn send_management(&self, p: &[u8]) -> io::Result<()> {
-        self.send_packet(p, true).await
+        let n = self.send_packet(p).await?;
+        if n == 0 {
+            Ok(())
+        } else {
+            check_write(n, p.len())
+        }
     }
-    async fn send_packet(&self, p: &[u8], management: bool) -> io::Result<()> {
+    async fn send_packet(&self, p: &[u8]) -> io::Result<usize> {
         loop {
             let mut guard = self.0.writable().await?;
-            match guard.try_io(|fd| {
-                // SAFETY: p is readable and MSG_NOSIGNAL prevents SIGPIPE.
-                let n = unsafe {
-                    libc::send(
-                        fd.as_raw_fd(),
-                        p.as_ptr().cast(),
-                        p.len(),
-                        libc::MSG_NOSIGNAL,
-                    )
-                };
-                if n < 0 {
-                    Err(io::Error::last_os_error())
-                } else if n as usize != p.len() && !(management && n == 0) {
-                    Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "partial Bluetooth packet write",
-                    ))
-                } else {
-                    Ok(())
-                }
-            }) {
+            match guard.try_io(|fd| send(fd.as_raw_fd(), p)) {
                 Ok(result) => return result,
                 Err(_) => continue,
             }
@@ -286,7 +296,7 @@ mod tests {
         let socket = Socket::from_owned(fd).unwrap();
         socket.connected().await.unwrap();
         let (mut peer, _) = listener.accept().await.unwrap();
-        let mtu_request = [2, 247, 0];
+        let mtu_request = ns2pro_proto::att::mtu_request();
         timeout(Duration::from_secs(1), socket.send(&mtu_request))
             .await
             .expect("first ATT write must not wait for another writable edge after connect")
