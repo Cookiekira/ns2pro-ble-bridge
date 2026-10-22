@@ -80,14 +80,20 @@ fn with_buffer<T>(buffer: &IBuffer, consume: impl FnOnce(&[u8]) -> T) -> windows
     }))
 }
 
-#[derive(Debug, Default)]
-pub struct WindowsBluetooth;
+#[derive(Debug)]
+pub struct WindowsBluetooth {
+    adapter: BluetoothAdapter,
+}
 impl WindowsBluetooth {
     pub async fn new() -> Result<Self, BleError> {
         // Apartment initialization belongs to rt::windows::RuntimeGuard.
-        let service = Self;
-        service.adapter_address().await?;
-        Ok(service)
+        let adapter = winrt!(BluetoothAdapter::GetDefaultAsync(), ble)?;
+        if !adapter.IsLowEnergySupported().map_err(ble)? {
+            return Err(BleError::Platform(
+                "Default Bluetooth adapter does not support Bluetooth LE".into(),
+            ));
+        }
+        Ok(Self { adapter })
     }
 }
 struct Watcher {
@@ -174,8 +180,9 @@ impl Bluetooth for WindowsBluetooth {
             .ok_or_else(|| BleError::Platform("Bluetooth watcher ended".into()))?
     }
     async fn adapter_address(&self) -> Result<Address, BleError> {
-        let adapter = winrt!(BluetoothAdapter::GetDefaultAsync(), ble)?;
-        let raw = adapter.BluetoothAddress().map_err(ble)?;
+        // Read identity only when the common session requests it. A host-address
+        // override therefore avoids this lookup entirely.
+        let raw = self.adapter.BluetoothAddress().map_err(ble)?;
         Address::new(raw).filter(|_| raw != 0).ok_or_else(|| {
             BleError::Platform("Default Bluetooth adapter has no valid address".into())
         })
