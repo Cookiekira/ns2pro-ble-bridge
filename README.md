@@ -13,9 +13,12 @@ cargo test --locked --workspace
 
 The executable is `target/release/ns2pro-ble-bridge` (`.exe` on Windows). No .NET,
 Go, D-Bus library, submodule initialization or separate VIIPER process is needed.
-The release workflow builds Linux x64, Linux arm64 **natively on an ARM runner**,
-and Windows x64, named `ns2pro-ble-bridge-<tag>-<rid>` (Windows adds `.exe`).
-These workflow changes have not been published as a release.
+The release workflow is configured to build Linux x64, Linux arm64 **natively on
+an ARM runner**, and Windows x64, named `ns2pro-ble-bridge-<tag>-<rid>` (Windows adds `.exe`).
+Manual dispatch builds and uploads artifacts without publishing a GitHub release;
+only `v*` tag pushes publish releases. CI also checks native Linux arm64 builds,
+strict clippy and tests. ARM workflow execution and hardware remain unverified;
+these workflow changes have not been published as a release.
 
 ## Linux
 
@@ -158,9 +161,12 @@ User-operated Linux x64 runs confirm native BLE input, vhci USB enumeration and
 Steam input with SteamRT3 disabled after the legacy client dependency fix above.
 Run the executable built in the same checkout; startup logs now identify its
 absolute path, so stale binaries in a different worktree can be distinguished.
-A captured connection used a 48.75 ms BLE interval, consistent with roughly 20 Hz
-input and perceptible wireless delay despite fast bridge processing. Firmware,
-per-feature output/reconnect/coexistence, and ARM acceptance remain incomplete. Follow the [hardware checklist](docs/linux-hardware-checklist.md),
+The earlier baseline capture used 48.75 ms (roughly 20 Hz); the later startup LE
+update confirms 7.5 ms on the tested adapter, with user-confirmed delay improvement
+and power-off/reconnect. No independent 7.5 ms packet capture is archived. Users also
+confirmed motion, basic rumble and steady/restored player indicators. Firmware,
+detailed input/power/output, cleanup/coexistence, long-duration stability, Windows
+physical and ARM hardware acceptance remain incomplete. Follow the [hardware checklist](docs/linux-hardware-checklist.md),
 [Linux evidence](docs/rust-linux-implementation.md), and
 [integration record](docs/rust-integration-validation.md).
 
