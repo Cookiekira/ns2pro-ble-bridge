@@ -10,3 +10,5 @@ pub mod vhci;
 #[cfg(all(test, not(windows)))]
 #[path = "usbip_win_wire.rs"]
 mod usbip_win_wire_tests;
+#[cfg(target_os = "linux")]
+pub mod vhci;
