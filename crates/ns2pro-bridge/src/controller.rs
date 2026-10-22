@@ -181,7 +181,7 @@ impl<'a, L: GattLink> Controller<'a, L> {
                         &command::rumble_packet(&v.left, &v.right),
                     )
                     .await?;
-                    channels.stats.lock().unwrap().rumble_writes += 1;
+                    channels.stats.lock().unwrap().rumble_written();
                     next = tokio::time::Instant::now() + Duration::from_millis(20);
                 }
                 rumble.changed().await.map_err(|_| LinkError::Closed)?;
