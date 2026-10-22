@@ -21,7 +21,8 @@ unchecked unless individually evidenced; see [integration evidence](rust-integra
 - [ ] If rejected, connected local TCP-fd fallback attaches; no usbip executable invoked.
 - [ ] Full Speed `057e:2069` enumerates, both HID/bulk interfaces work, SDL/game initializes.
 - [ ] Buttons, both calibrated sticks, battery/charging and IMU reach host correctly.
-- [ ] Host rumble reaches controller and latest-value 20 ms throttle remains stable.
+- [x] User confirms Steam controller-test Rumble works on the tested Linux setup.
+- [ ] Verify sustained/rapid rumble updates and latest-value 20 ms throttle on hardware.
 - [ ] Host player LEDs reach controller and replay after reconnect.
 - [ ] Loss publishes neutral buttons/sticks/motion, then reconnects after return.
 - [ ] Old rumble cannot replay; pending bulk/IN/UNLINK behave correctly.

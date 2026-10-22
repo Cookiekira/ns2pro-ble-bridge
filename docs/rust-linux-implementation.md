@@ -255,3 +255,9 @@ The user subsequently confirmed the requested power-off/reconnect check passed,
 including continued 7.5 ms negotiation. This is user-reported hardware acceptance
 on the same tested setup. No extra capture, reconnect count or long-duration test
 was supplied; it does not establish other-adapter or soak-test coverage.
+
+
+The user also confirmed Steam controller-test Rumble works. This validates the
+basic host-output-to-controller vibration path on the tested setup. Sustained or
+rapid updates, measured throttle timing and stale-rumble behavior across reconnect
+were not separately exercised by this confirmation.
