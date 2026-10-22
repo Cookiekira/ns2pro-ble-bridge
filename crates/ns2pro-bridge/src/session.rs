@@ -19,82 +19,92 @@ pub enum SessionError {
     #[error("session cancelled")]
     Cancelled,
 }
-#[derive(Debug, Default)]
-pub struct SessionState {
+#[derive(Debug)]
+pub struct AttemptOutcome {
     pub paired: bool,
     pub established: bool,
+    pub result: Result<(), SessionError>,
 }
 /// One attempt owns the acquired link and always closes it, even during partial setup.
 pub async fn attempt<B: Bluetooth>(
     bluetooth: &B,
     options: &Options,
     channels: &Channels,
-    state: &mut SessionState,
+    cache: &Cache,
+    mut paired: bool,
     cancel: &CancellationToken,
-) -> Result<(), SessionError> {
-    state.established = false;
-    let cache = Cache(options.cache_file.clone());
+) -> AttemptOutcome {
+    let mut established = false;
     let cached = cache.load().unwrap_or_else(|e| {
         tracing::warn!(%e,"ignoring invalid cache");
         None
     });
     let selected = options.device_address.or(cached);
     let from_cache = options.device_address.is_none() && cached.is_some();
-    let acquire = async {
-        let target = bluetooth.scan(selected).await?;
-        let link = bluetooth.connect(&target).await?;
-        Ok::<_, SessionError>((target, link))
-    };
-    let (target, link) = match tokio::select! {_=cancel.cancelled()=>Err(SessionError::Cancelled),result=acquire=>result}
-    {
-        Ok(v) => v,
-        Err(e) => {
-            if from_cache
-                && !cancel.is_cancelled()
-                && !matches!(
-                    e,
-                    SessionError::Bluetooth(BleError::Cancelled) | SessionError::Cancelled
-                )
-            {
-                cache.forget()?;
+    let result = async {
+        let acquire = async {
+            let target = bluetooth.scan(selected).await?;
+            let link = bluetooth.connect(&target).await?;
+            Ok::<_, SessionError>((target, link))
+        };
+        let (target, link) = tokio::select! {
+            _ = cancel.cancelled() => Err(SessionError::Cancelled),
+            result = acquire => result,
+        }?;
+        channels.rumble.send_replace(None);
+        let setup = async {
+            let mut controller = Controller::new(&link).await?;
+            controller
+                .initialize(channels, options.feature_flags)
+                .await?;
+            if selected.is_none() || (options.pair_host && !paired) {
+                let host = match options.host_address {
+                    Some(a) => a,
+                    None => bluetooth.adapter_address().await?,
+                };
+                let mut key = [0; 16];
+                let mut challenge = [0; 16];
+                getrandom::fill(&mut key).map_err(|e| ControllerError::Random(e.to_string()))?;
+                getrandom::fill(&mut challenge)
+                    .map_err(|e| ControllerError::Random(e.to_string()))?;
+                controller.pair(host, key, challenge).await?;
+                paired = true;
             }
-            return Err(e);
-        }
-    };
-    channels.rumble.send_replace(None);
-    let setup = async {
-        let mut controller = Controller::new(&link).await?;
-        controller
-            .initialize(channels, options.feature_flags)
-            .await?;
-        if selected.is_none() || (options.pair_host && !state.paired) {
-            let host = match options.host_address {
-                Some(a) => a,
-                None => bluetooth.adapter_address().await?,
-            };
-            let mut key = [0; 16];
-            let mut challenge = [0; 16];
-            getrandom::fill(&mut key).map_err(|e| ControllerError::Random(e.to_string()))?;
-            getrandom::fill(&mut challenge).map_err(|e| ControllerError::Random(e.to_string()))?;
-            controller.pair(host, key, challenge).await?;
-            state.paired = true;
-        }
-        cache.save(target.address)?;
-        state.established = true;
-        tracing::info!(address=%target.address, "controller initialized; receiving input");
-        controller.run(channels, cancel).await?;
-        Ok::<(), SessionError>(())
-    };
-    let result =
-        tokio::select! {_=cancel.cancelled()=>Err(SessionError::Cancelled),result=setup=>result};
-    link.closed().cancel();
-    channels.neutral();
-    link.close().await;
-    // An established session leaves a valid cache; a failed cached setup invalidates it.
-    if from_cache && !cancel.is_cancelled() && !state.established && result.is_err() {
-        cache.forget()?;
+            cache.save(target.address)?;
+            established = true;
+            tracing::info!(address=%target.address, "controller initialized; receiving input");
+            controller.run(channels, cancel).await?;
+            Ok::<(), SessionError>(())
+        };
+        let result = tokio::select! {
+            _ = cancel.cancelled() => Err(SessionError::Cancelled),
+            result = setup => result,
+        };
+        link.closed().cancel();
+        channels.neutral();
+        link.close().await;
+        result
     }
-    result
+    .await;
+    // An established session leaves a valid cache; failed cached attempts invalidate it.
+    let result = if from_cache
+        && !cancel.is_cancelled()
+        && !established
+        && result.as_ref().is_err_and(|error| {
+            !matches!(
+                error,
+                SessionError::Bluetooth(BleError::Cancelled) | SessionError::Cancelled
+            )
+        }) {
+        cache.forget().map_err(SessionError::from).and(result)
+    } else {
+        result
+    };
+    AttemptOutcome {
+        paired,
+        established,
+        result,
+    }
 }
 pub async fn supervise<B: Bluetooth>(
     bluetooth: &B,
@@ -106,18 +116,19 @@ pub async fn supervise<B: Bluetooth>(
     if options.forget_device {
         cache.forget()?;
     }
-    let mut state = SessionState::default();
+    let mut paired = false;
     let mut failures = 0u32;
     loop {
         if cancel.is_cancelled() {
             return Ok(());
         }
-        let result = attempt(bluetooth, options, channels, &mut state, cancel).await;
+        let outcome = attempt(bluetooth, options, channels, &cache, paired, cancel).await;
+        paired = outcome.paired;
         if cancel.is_cancelled() {
             return Ok(());
         }
-        let established = state.established;
-        if let Err(error) = result {
+        let established = outcome.established;
+        if let Err(error) = outcome.result {
             tracing::warn!(%error,"controller session ended; reconnecting");
         }
         let delay = if established {
@@ -130,6 +141,9 @@ pub async fn supervise<B: Bluetooth>(
             let _ = getrandom::fill(&mut random);
             Duration::from_millis((base * 1000 + u64::from(random[0]) * base).min(10000))
         };
-        tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep(delay)=>{}}
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            _ = tokio::time::sleep(delay) => {}
+        }
     }
 }

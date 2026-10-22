@@ -3,11 +3,7 @@
 #[path = "support/linux_fake.rs"]
 mod fake;
 use fake::*;
-use ns2pro_bridge::{
-    channels::Channels,
-    session::{self, SessionState},
-    usb::session::serve_urbs,
-};
+use ns2pro_bridge::{channels::Channels, session, usb::session::serve_urbs};
 use ns2pro_proto::{
     calibration::Calibration,
     input::{Buttons, parse_common_report},
@@ -136,10 +132,13 @@ async fn notification_to_in_memory_response() {
     let (bridge, mut peer) = tokio::io::duplex(4096);
     let usb = serve_urbs(bridge, channels.clone(), usb_cancel.clone());
     let scenario = async {
-        let mut state = SessionState::default();
-        let attempt = session::attempt(&radio, &o, &channels, &mut state, &cancel);
+        let attempt_cache = ns2pro_bridge::cache::Cache(cache.path());
+        let attempt = session::attempt(&radio, &o, &channels, &attempt_cache, false, &cancel);
         tokio::pin!(attempt);
-        tokio::select! {r=&mut attempt=>panic!("setup failed: {r:?}"),_=until(||ready(&radio))=>{}}
+        tokio::select! {
+            result = &mut attempt => panic!("setup failed: {result:?}"),
+            _ = until(|| ready(&radio)) => {}
+        }
         report(&mut peer, 0).await; // Consume initial dirty default state.
         let mut timings = Vec::with_capacity(SAMPLES);
         let mut allocations = 0;
@@ -186,7 +185,7 @@ async fn notification_to_in_memory_response() {
             bytes,
         );
         cancel.cancel();
-        assert!(attempt.await.is_err());
+        assert!(attempt.await.result.is_err());
         usb_cancel.cancel();
     };
     let (result, ()) = tokio::join!(usb, scenario);

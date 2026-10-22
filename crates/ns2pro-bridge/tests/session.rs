@@ -450,11 +450,7 @@ impl Drop for TestCache {
 #[tokio::test(start_paused = true)]
 async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
     use clap::Parser;
-    use ns2pro_bridge::{
-        cache::Cache,
-        cli::Options,
-        session::{SessionState, attempt},
-    };
+    use ns2pro_bridge::{cache::Cache, cli::Options, session::attempt};
     let cache = TestCache::new();
     let mut options = Options::parse_from([
         "bridge",
@@ -465,7 +461,8 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
     options.cache_file = cache.path();
     let bluetooth = FakeBluetooth::default();
     let channels = Channels::default();
-    let mut state = SessionState::default();
+    let attempt_cache = ns2pro_bridge::cache::Cache(cache.path());
+    let mut paired = false;
     for _ in 0..2 {
         let cancel = CancellationToken::new();
         let driver = async {
@@ -479,12 +476,20 @@ async fn discovery_pairing_cache_host_override_and_pair_once_per_process() {
             cancel.cancel();
         };
         let (result, ()) = tokio::join!(
-            attempt(&bluetooth, &options, &channels, &mut state, &cancel),
+            attempt(
+                &bluetooth,
+                &options,
+                &channels,
+                &attempt_cache,
+                paired,
+                &cancel
+            ),
             driver
         );
-        assert!(result.is_err());
-        assert!(state.paired);
-        assert!(state.established);
+        assert!(result.result.is_err());
+        assert!(result.paired);
+        assert!(result.established);
+        paired = result.paired;
     }
     assert_eq!(
         bluetooth.queries.load(std::sync::atomic::Ordering::Relaxed),
