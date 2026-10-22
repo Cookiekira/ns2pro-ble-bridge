@@ -98,10 +98,10 @@ fn open_driver() -> Result<OwnedHandle, AttachError> {
     let probe = unsafe {
         SetupDiGetDeviceInterfaceDetailW(devices.0, &interface, None, 0, Some(&mut required), None)
     };
-    if let Err(error) = probe {
-        if error.code() != ERROR_INSUFFICIENT_BUFFER.to_hresult() {
-            return Err(platform(error));
-        }
+    if let Err(error) = probe
+        && error.code() != ERROR_INSUFFICIENT_BUFFER.to_hresult()
+    {
+        return Err(platform(error));
     }
     if required < size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32 || required > 1024 * 1024 {
         return Err(platform("invalid SetupDi device path size"));
@@ -309,5 +309,62 @@ impl Attached {
 impl Drop for Attached {
     fn drop(&mut self) {
         self.stop.cancel();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_SEM_TIMEOUT, GetHandleInformation,
+    };
+
+    #[test]
+    fn only_pre_import_size_rejections_allow_abi_retry() {
+        for status in [STATUS_BUFFER_TOO_SMALL, STATUS_INVALID_BUFFER_SIZE] {
+            let error =
+                std::io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(status) } as i32);
+            assert!(size_rejected(&AttachError::Io(error)));
+        }
+        for code in [ERROR_ACCESS_DENIED, ERROR_SEM_TIMEOUT] {
+            let error = std::io::Error::from_raw_os_error(code.0 as i32);
+            assert!(!size_rejected(&AttachError::Io(error)));
+        }
+        assert!(!size_rejected(&AttachError::Cancelled));
+    }
+
+    #[test]
+    fn owned_native_event_closes_exactly_at_scope_end() {
+        let event = owned(unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.unwrap());
+        let handle = raw(&event);
+        let mut flags = 0;
+        unsafe { GetHandleInformation(handle, &mut flags) }.unwrap();
+        drop(event);
+        let error = unsafe { GetHandleInformation(handle, &mut flags) }.unwrap_err();
+        assert_eq!(error.code(), ERROR_INVALID_HANDLE.to_hresult());
+    }
+
+    #[tokio::test]
+    async fn detach_is_idempotent_and_waits_for_worker_resource_release() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let stop = CancellationToken::new();
+        let worker_stop = stop.clone();
+        let released = Arc::new(AtomicBool::new(false));
+        let worker_released = released.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            futures::executor::block_on(worker_stop.cancelled());
+            worker_released.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        let mut attached = Attached {
+            stop,
+            worker: Some(worker),
+        };
+        attached.detach().await.unwrap();
+        assert!(released.load(Ordering::SeqCst));
+        attached.detach().await.unwrap();
     }
 }

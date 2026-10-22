@@ -399,10 +399,10 @@ impl GattLink for WindowsGattLink {
                             with_buffer(&args.CharacteristicValue()?, |bytes| {
                                 let mut slot =
                                     callback_sink.lock().unwrap_or_else(|e| e.into_inner());
-                                if !closed.is_cancelled() {
-                                    if let Some(sink) = slot.as_mut() {
-                                        sink(bytes);
-                                    }
+                                if !closed.is_cancelled()
+                                    && let Some(sink) = slot.as_mut()
+                                {
+                                    sink(bytes);
                                 }
                             })?;
                         }
@@ -450,5 +450,57 @@ impl Drop for WindowsGattLink {
         self.closed.cancel();
         self.characteristics.get_mut().clear();
         self.resources.get_mut().take();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use windows::Storage::Streams::Buffer;
+
+    #[test]
+    fn native_buffer_is_borrowed_without_copy_and_respects_length() {
+        let _runtime = crate::rt::windows::RuntimeGuard::new().unwrap();
+        let buffer = Buffer::Create(64).unwrap();
+        buffer.SetLength(3).unwrap();
+        let access: IBufferByteAccess = buffer.cast().unwrap();
+        let pointer = unsafe { access.Buffer().unwrap() };
+        unsafe { std::ptr::copy_nonoverlapping([1u8, 2, 3].as_ptr(), pointer, 3) };
+        with_buffer(&buffer.cast().unwrap(), |bytes| {
+            assert_eq!(bytes, &[1, 2, 3]);
+            assert_eq!(bytes.as_ptr(), pointer);
+        })
+        .unwrap();
+        buffer.SetLength(0).unwrap();
+        with_buffer(&buffer.cast().unwrap(), |bytes| assert!(bytes.is_empty())).unwrap();
+    }
+
+    #[test]
+    fn cancellation_scope_runs_when_operation_future_is_dropped() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let _scope = {
+            let guard = OnDrop(Some(move || flag.store(true, Ordering::SeqCst)));
+            assert!(!cancelled.load(Ordering::SeqCst));
+            guard
+        };
+        drop(_scope);
+        assert!(cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn failed_gatt_status_is_never_accepted_as_success() {
+        assert!(check_status(GattCommunicationStatus::Success, "test").is_ok());
+        for status in [
+            GattCommunicationStatus::AccessDenied,
+            GattCommunicationStatus::Unreachable,
+            GattCommunicationStatus::ProtocolError,
+        ] {
+            assert!(matches!(
+                check_status(status, "test"),
+                Err(LinkError::Platform(_))
+            ));
+        }
     }
 }

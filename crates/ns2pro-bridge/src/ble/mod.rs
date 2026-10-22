@@ -55,3 +55,6 @@ pub trait GattLink: 'static {
     /// Idempotently release the link, including partially initialized sessions.
     fn close(&self) -> impl Future<Output = ()>;
 }
+
+#[cfg(windows)]
+pub mod windows;

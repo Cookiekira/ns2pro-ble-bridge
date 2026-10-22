@@ -37,10 +37,10 @@ impl RuntimeGuard {
 }
 impl Drop for RuntimeGuard {
     fn drop(&mut self) {
-        if let Some(handle) = self.mmcss.take() {
-            if let Err(error) = unsafe { AvRevertMmThreadCharacteristics(handle) } {
-                tracing::debug!(%error, "MMCSS Games release failed");
-            }
+        if let Some(handle) = self.mmcss.take()
+            && let Err(error) = unsafe { AvRevertMmThreadCharacteristics(handle) }
+        {
+            tracing::debug!(%error, "MMCSS Games release failed");
         }
         unsafe { RoUninitialize() };
     }
