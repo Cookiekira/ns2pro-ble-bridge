@@ -22,6 +22,7 @@ pub enum SessionError {
 #[derive(Debug, Default)]
 pub struct SessionState {
     pub paired: bool,
+    pub established: bool,
 }
 /// One attempt owns the acquired link and always closes it, even during partial setup.
 pub async fn attempt<B: Bluetooth>(
@@ -31,6 +32,7 @@ pub async fn attempt<B: Bluetooth>(
     state: &mut SessionState,
     cancel: &CancellationToken,
 ) -> Result<(), SessionError> {
+    state.established = false;
     let cache = Cache(options.cache_file.clone());
     let cached = cache.load().unwrap_or_else(|e| {
         tracing::warn!(%e,"ignoring invalid cache");
@@ -78,6 +80,7 @@ pub async fn attempt<B: Bluetooth>(
             state.paired = true;
         }
         cache.save(target.address)?;
+        state.established = true;
         controller.run(channels, cancel).await?;
         Ok::<(), SessionError>(())
     };
@@ -86,16 +89,7 @@ pub async fn attempt<B: Bluetooth>(
     channels.neutral();
     link.close().await;
     // An established session leaves a valid cache; a failed cached setup invalidates it.
-    if from_cache
-        && !cancel.is_cancelled()
-        && !matches!(
-            result,
-            Err(SessionError::Controller(ControllerError::Link(
-                crate::ble::LinkError::Closed
-            )))
-        )
-        && result.is_err()
-    {
+    if from_cache && !cancel.is_cancelled() && !state.established && result.is_err() {
         cache.forget()?;
     }
     result
@@ -120,12 +114,7 @@ pub async fn supervise<B: Bluetooth>(
         if cancel.is_cancelled() {
             return Ok(());
         }
-        let established = matches!(
-            result,
-            Err(SessionError::Controller(ControllerError::Link(
-                crate::ble::LinkError::Closed
-            )))
-        );
+        let established = state.established;
         if let Err(error) = result {
             tracing::warn!(%error,"controller session ended; reconnecting");
         }

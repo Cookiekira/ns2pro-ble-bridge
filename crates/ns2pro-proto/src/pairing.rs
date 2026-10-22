@@ -70,10 +70,8 @@ impl Pairing {
                     *b = self.key[i] ^ p[i + 1];
                 }
             }
-            2 => {
-                if p[1..17] != confirmation(self.ltk, self.challenge) {
-                    return Err(PairingError::Confirmation);
-                }
+            2 if p[1..17] != confirmation(self.ltk, self.challenge) => {
+                return Err(PairingError::Confirmation);
             }
             _ => {}
         }

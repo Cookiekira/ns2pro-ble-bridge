@@ -1,0 +1,263 @@
+//! Native vhci sysfs attachment. No USB/IP subprocess or timed write batching.
+use crate::usb::host::AttachError;
+use std::{
+    fs, io,
+    os::fd::AsRawFd,
+    path::{Path, PathBuf},
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::{TcpListener, TcpStream, UnixStream},
+};
+const ROOT: &str = "/sys/devices/platform/vhci_hcd.0";
+const DEVICE_ID: u32 = 0x10001;
+#[derive(Debug)]
+pub enum VhciStream {
+    Unix(UnixStream),
+    Tcp(TcpStream),
+}
+impl AsyncRead for VhciStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Unix(s) => Pin::new(s).poll_read(cx, buf),
+            Self::Tcp(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+impl AsyncWrite for VhciStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            Self::Unix(s) => Pin::new(s).poll_write(cx, buf),
+            Self::Tcp(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Unix(s) => Pin::new(s).poll_flush(cx),
+            Self::Tcp(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Unix(s) => Pin::new(s).poll_shutdown(cx),
+            Self::Tcp(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Port {
+    port: u32,
+    status: u32,
+    device: u32,
+    fd: u32,
+}
+fn ports(text: &str) -> Result<Vec<Port>, AttachError> {
+    text.lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.first() != Some(&"hs") {
+                return None;
+            }
+            Some((|| {
+                if fields.len() < 6 {
+                    return Err(AttachError::Platform("malformed vhci status row".into()));
+                }
+                let decimal = |n: usize| {
+                    fields[n]
+                        .parse::<u32>()
+                        .map_err(|_| AttachError::Platform("invalid vhci status integer".into()))
+                };
+                Ok(Port {
+                    port: decimal(1)?,
+                    status: decimal(2)?,
+                    device: u32::from_str_radix(fields[4], 16)
+                        .map_err(|_| AttachError::Platform("invalid vhci device id".into()))?,
+                    fd: decimal(5)?,
+                })
+            })())
+        })
+        .collect()
+}
+fn status_files(root: &Path) -> Result<Vec<PathBuf>, AttachError> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(root).map_err(|e| {
+        AttachError::Platform(format!(
+            "read {}: {e}; load vhci-hcd (sudo modprobe vhci-hcd) and run auto-attach as root",
+            root.display()
+        ))
+    })? {
+        let path = entry?.path();
+        if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            n == "status"
+                || n.strip_prefix("status.")
+                    .is_some_and(|s| s.parse::<u32>().is_ok())
+        }) {
+            paths.push(path)
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+fn free_ports(root: &Path) -> Result<Vec<(PathBuf, Port)>, AttachError> {
+    let mut result = vec![];
+    for path in status_files(root)? {
+        for port in ports(&fs::read_to_string(&path)?)? {
+            if port.status == 4 {
+                result.push((path.clone(), port))
+            }
+        }
+    }
+    Ok(result)
+}
+/// Lease for one attached Full Speed device. Drop also attempts detach on early error.
+#[derive(Debug)]
+pub struct Attached {
+    root: PathBuf,
+    status: PathBuf,
+    port: u32,
+    fd: u32,
+    attached: bool,
+}
+impl Attached {
+    pub async fn attach() -> Result<(Self, VhciStream), AttachError> {
+        Self::attach_at(Path::new(ROOT)).await
+    }
+    async fn attach_at(root: &Path) -> Result<(Self, VhciStream), AttachError> {
+        let candidates = free_ports(root)?;
+        if candidates.is_empty() {
+            return Err(AttachError::Platform(
+                "no free vhci high-speed-hub port for Full Speed device".into(),
+            ));
+        }
+        for (status, port) in candidates {
+            let (kernel, bridge) = std::os::unix::net::UnixStream::pair()?;
+            bridge.set_nonblocking(true)?;
+            let fd = kernel.as_raw_fd();
+            match write_attach(root, port.port, fd) {
+                Ok(()) => {
+                    let lease = Self {
+                        root: root.into(),
+                        status,
+                        port: port.port,
+                        fd: fd as _,
+                        attached: true,
+                    };
+                    drop(kernel);
+                    return Ok((lease, VhciStream::Unix(UnixStream::from_std(bridge)?)));
+                }
+                Err(e) if e.raw_os_error() == Some(libc::EBUSY) => continue,
+                Err(e) if fallback_error(&e) => {
+                    tracing::warn!(%e,"vhci rejected AF_UNIX stream; trying local TCP fd");
+                    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+                    let (client, accepted) = tokio::try_join!(
+                        TcpStream::connect(listener.local_addr()?),
+                        listener.accept()
+                    )?;
+                    let (server, _) = accepted;
+                    client.set_nodelay(true)?;
+                    server.set_nodelay(true)?;
+                    let fd = client.as_raw_fd();
+                    if let Err(e) = write_attach(root, port.port, fd) {
+                        if e.raw_os_error() == Some(libc::EBUSY) {
+                            continue;
+                        }
+                        return Err(attach_hint(e));
+                    }
+                    let lease = Self {
+                        root: root.into(),
+                        status,
+                        port: port.port,
+                        fd: fd as _,
+                        attached: true,
+                    };
+                    drop(client);
+                    return Ok((lease, VhciStream::Tcp(server)));
+                }
+                Err(e) => return Err(attach_hint(e)),
+            }
+        }
+        Err(AttachError::Platform(
+            "vhci ports were claimed concurrently; retry attach".into(),
+        ))
+    }
+    pub fn port(&self) -> u32 {
+        self.port
+    }
+    /// Idempotent. Never detach a port whose exposed device/fd identity has changed.
+    pub fn detach(&mut self) -> Result<(), AttachError> {
+        if !self.attached {
+            return Ok(());
+        }
+        let current = ports(&fs::read_to_string(&self.status)?)?
+            .into_iter()
+            .find(|p| p.port == self.port);
+        match current {
+            Some(p)
+                if (p.status == 5 || p.status == 6) && p.fd == self.fd && p.device == DEVICE_ID =>
+            {
+                fs::write(self.root.join("detach"), format!("{}", self.port))?;
+            }
+            Some(p) if p.status == 4 => {}
+            // The kernel or another manager released/replaced this lease. Do not touch it.
+            _ => {
+                tracing::debug!(port = self.port, "vhci port no longer owned; skip detach");
+            }
+        }
+        self.attached = false;
+        Ok(())
+    }
+}
+impl Drop for Attached {
+    fn drop(&mut self) {
+        if let Err(e) = self.detach() {
+            tracing::warn!(%e,"vhci detach failed");
+        }
+    }
+}
+fn write_attach(root: &Path, port: u32, fd: i32) -> io::Result<()> {
+    fs::write(root.join("attach"), format!("{port} {fd} {DEVICE_ID} 2"))
+}
+fn fallback_error(e: &io::Error) -> bool {
+    matches!(
+        e.raw_os_error(),
+        Some(libc::EINVAL | libc::EPROTOTYPE | libc::EOPNOTSUPP | libc::EAFNOSUPPORT)
+    )
+}
+fn attach_hint(e: io::Error) -> AttachError {
+    AttachError::Platform(format!(
+        "vhci sysfs attach failed: {e}; auto-attach needs root and vhci-hcd, or use --no-auto-attach"
+    ))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn select_only_free_full_speed_capable_ports() {
+        let s = "hub port sta spd dev sockfd local_busid\nhs 0000 004 000 00000000 000000 0-0\nhs 0001 006 002 00010001 000023 1-1\nss 0008 004 000 00000000 000000 0-0\n";
+        let p = ports(s).unwrap();
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].status, 4);
+        assert_eq!(p[1].device, DEVICE_ID);
+        assert_eq!(p[1].fd, 23);
+        assert!(ports("header\nhs nonsense").is_err());
+    }
+    #[test]
+    fn fallback_is_only_for_transport_rejection() {
+        assert!(fallback_error(&io::Error::from_raw_os_error(libc::EINVAL)));
+        for code in [libc::EACCES, libc::EPERM, libc::EBUSY, libc::ENOENT] {
+            assert!(!fallback_error(&io::Error::from_raw_os_error(code)));
+        }
+    }
+}
