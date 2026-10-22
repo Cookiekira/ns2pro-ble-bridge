@@ -1,5 +1,10 @@
 //! Primary boundary: real controller/session/device over fake GATT and a byte peer.
-use ns2pro_bridge::{ble::*, channels::Channels, controller::Controller, usb::session::serve_urbs};
+use ns2pro_bridge::{
+    ble::*,
+    channels::{Channels, Identity},
+    controller::Controller,
+    usb::session::serve_urbs,
+};
 use ns2pro_proto::{
     Address, calibration::Calibration, command, gatt::Characteristic, input::pack_stick12,
     pairing::confirmation,
@@ -19,6 +24,8 @@ struct Data {
     key: [u8; 16],
     reject: bool,
     bad_calibration: bool,
+    identity: Option<[u8; 64]>,
+    bad_identity: bool,
     closes: usize,
 }
 #[derive(Clone, Default)]
@@ -46,13 +53,20 @@ impl GattLink for Fake {
             let mut reply = vec![bytes[0], 0, bytes[2], bytes[3], 0, 0, 0, 0];
             match (bytes[0], bytes[3]) {
                 (2, 4) => {
-                    if d.bad_calibration {
+                    let address = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+                    if (address == 0x13000 && d.bad_identity)
+                        || (address != 0x13000 && d.bad_calibration)
+                    {
                         reply[0] = 0xff;
                     } else {
-                        let address = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
                         reply.extend([64, 0, 0, 0]);
                         reply.extend(address.to_le_bytes());
-                        reply.extend(ns2pro_usb::device::flash_block(address));
+                        reply.extend(if address == 0x13000 {
+                            d.identity
+                                .unwrap_or_else(|| ns2pro_usb::device::flash_block(address))
+                        } else {
+                            ns2pro_usb::device::flash_block(address)
+                        });
                     }
                 }
                 (0x15, sub) => {
@@ -139,6 +153,95 @@ fn report() -> [u8; 60] {
     r[48..50].copy_from_slice(&(-5i16).to_le_bytes());
     r
 }
+async fn read_usb_identity(peer: &mut DuplexStream) -> [u8; 64] {
+    let mut payload = [0; 8];
+    payload[4..].copy_from_slice(&0x13000u32.to_le_bytes());
+    let request = command::command(2, 1, &payload);
+    send(peer, urb(1, 0, 2, request.len()), &request).await;
+    assert_eq!(reply(peer).await, (1, 0, vec![]));
+    send(peer, urb(2, 1, 2, 80), &[]).await;
+    let (seq, status, bytes) = reply(peer).await;
+    assert_eq!((seq, status, bytes.len()), (2, 0, 80));
+    assert_eq!(&bytes[12..16], &0x13000u32.to_le_bytes());
+    bytes[16..].try_into().unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn controller_identity_reaches_usb_at_start_and_after_changes() {
+    for initialize_first in [false, true] {
+        let link = Fake::default();
+        let distinctive = std::array::from_fn(|i| (i as u8).wrapping_mul(7));
+        link.data.lock().unwrap().identity = Some(distinctive);
+        let channels = Channels::default();
+        let mut controller = Controller::new(&link).await.unwrap();
+        if initialize_first {
+            controller.initialize(&channels, 7).await.unwrap();
+        }
+        let (mut peer, stream) = tokio::io::duplex(4096);
+        let cancel = CancellationToken::new();
+        let host = async {
+            if !initialize_first {
+                // Manual clients can enumerate before BLE resolves identity.
+                assert_eq!(
+                    read_usb_identity(&mut peer).await,
+                    ns2pro_usb::device::flash_block(0x13000)
+                );
+                controller.initialize(&channels, 7).await.unwrap();
+            }
+            assert_eq!(
+                *channels.identity.borrow(),
+                Identity::Resolved(Some(distinctive))
+            );
+            assert!(
+                link.writes()
+                    .iter()
+                    .any(|(ch, bytes)| *ch == Characteristic::Command
+                        && *bytes == command::spi_read(0x13000, 0x40))
+            );
+            assert_eq!(read_usb_identity(&mut peer).await, distinctive);
+            // A reconnect replaces identity without replacing the USB session.
+            let replacement = [0x5a; 64];
+            link.data.lock().unwrap().identity = Some(replacement);
+            controller.initialize(&channels, 7).await.unwrap();
+            assert_eq!(read_usb_identity(&mut peer).await, replacement);
+            cancel.cancel();
+        };
+        let ((), result) = tokio::join!(host, serve_urbs(stream, channels.clone(), cancel.clone()));
+        result.unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn identity_read_failure_uses_fallback_and_keeps_input_running() {
+    let link = Fake::default();
+    link.data.lock().unwrap().bad_identity = true;
+    let channels = Channels::default();
+    let mut controller = Controller::new(&link).await.unwrap();
+    controller.initialize(&channels, 7).await.unwrap();
+    assert_eq!(*channels.identity.borrow(), Identity::Resolved(None));
+    let (mut peer, stream) = tokio::io::duplex(4096);
+    let cancel = CancellationToken::new();
+    let host = async {
+        let identity = read_usb_identity(&mut peer).await;
+        let mut expected = [0; 64];
+        expected[2..18].copy_from_slice(b"NS2PRO-BRIDGE-00");
+        assert_eq!(identity, expected);
+        assert!(!identity.windows(6).any(|bytes| bytes == b"VIIPER"));
+        link.notify(&report());
+        send(&mut peer, urb(3, 1, 1, 64), &[]).await;
+        let (_, status, bytes) = reply(&mut peer).await;
+        assert_eq!(status, 0);
+        assert_eq!(&bytes[6..9], &pack_stick12(0x123, 0x456));
+        cancel.cancel();
+    };
+    let ((), result, _) = tokio::join!(
+        host,
+        serve_urbs(stream, channels.clone(), cancel.clone()),
+        controller.run(&channels, &cancel)
+    );
+    result.unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn complete_session_notification_to_usb_and_outputs() {
     let link = Fake::default();
