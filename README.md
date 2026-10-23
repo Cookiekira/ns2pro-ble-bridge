@@ -12,8 +12,6 @@ Use a **Switch 2 Pro Controller over Bluetooth** as a wired Switch 2 Pro Control
 
 Next time, run step 3 and press **Home** to wake the controller. Stop with **Ctrl+C**; the virtual controller detaches cleanly.
 
-Nothing else to install: no `usbip` tools, no BlueZ utilities, no .NET, Go or VIIPER. `bluetoothd` may keep running.
-
 ## Windows
 
 1. Install the signed [usbip-win2](https://github.com/vadimgrn/usbip-win2) driver (supported: v0.9.6.1–v0.9.8.1).
