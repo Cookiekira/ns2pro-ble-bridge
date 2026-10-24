@@ -53,15 +53,3 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
-
-[package.metadata.binstall]
-pkg-fmt = "bin"
-
-[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
-pkg-url = "{ repo }/releases/download/v{ version }/ns2pro-bridge-v{ version }-linux-x64"
-
-[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
-pkg-url = "{ repo }/releases/download/v{ version }/ns2pro-bridge-v{ version }-linux-arm64"
-
-[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
-pkg-url = "{ repo }/releases/download/v{ version }/ns2pro-bridge-v{ version }-win-x64.exe"
