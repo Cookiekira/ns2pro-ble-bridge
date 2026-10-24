@@ -31,10 +31,10 @@ impl AppError {
     pub fn hint(&self) -> &'static str {
         match self {
             Self::Bluetooth(_) => {
-                "Linux: run as root (sudo). Windows: needs a Bluetooth LE adapter and permission."
+                "Linux: check Bluetooth adapter availability and root permissions. Windows: needs a Bluetooth LE adapter and permission."
             }
             Self::Attach(_) => {
-                "Linux: sudo modprobe vhci-hcd and run auto-attach as root. Windows: install a supported usbip-win2 driver. Use --no-auto-attach for a manual host."
+                "Linux: check vhci-hcd kernel support and root permissions. Windows: install a supported usbip-win2 driver. Use --no-auto-attach for a manual host."
             }
             _ => "Use --log-level debug for native transport and connection diagnostics.",
         }
@@ -49,6 +49,26 @@ impl From<usb::Error> for AppError {
         }
     }
 }
+#[cfg(target_os = "linux")]
+fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = ()>> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut hangup = signal(SignalKind::hangup())?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => {},
+            _ = terminate.recv() => {},
+            _ = hangup.recv() => {},
+        }
+    })
+}
+#[cfg(windows)]
+fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = ()>> {
+    Ok(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+}
 async fn run_session<B: crate::ble::Bluetooth>(
     bluetooth: &B,
     options: &Options,
@@ -56,10 +76,11 @@ async fn run_session<B: crate::ble::Bluetooth>(
     cancel: CancellationToken,
     channels: Channels,
 ) -> Result<(), AppError> {
+    let shutdown = shutdown_signal().map_err(|e| AppError::Platform(e.to_string()))?;
     let stop = async {
         tokio::select! {
             _ = cancel.cancelled() => {},
-            _ = tokio::signal::ctrl_c() => cancel.cancel(),
+            _ = shutdown => cancel.cancel(),
         }
     };
     let controller = async {

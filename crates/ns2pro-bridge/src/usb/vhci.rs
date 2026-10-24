@@ -49,7 +49,7 @@ fn status_files(root: &Path) -> Result<Vec<PathBuf>, AttachError> {
     let mut paths = Vec::new();
     for entry in fs::read_dir(root).map_err(|e| {
         AttachError::Platform(format!(
-            "read {}: {e}; load vhci-hcd (sudo modprobe vhci-hcd) and run auto-attach as root",
+            "read {}: {e}; check that the kernel supports vhci-hcd",
             root.display()
         ))
     })? {
@@ -87,6 +87,16 @@ pub struct Attached {
 }
 impl Attached {
     pub async fn attach() -> Result<(Self, Either<UnixStream, TcpStream>), AttachError> {
+        if unsafe { libc::geteuid() } == 0 && !Path::new(ROOT).exists() {
+            let status = std::process::Command::new("modprobe")
+                .arg("vhci-hcd")
+                .status()?;
+            if !status.success() {
+                return Err(AttachError::Platform(format!(
+                    "modprobe vhci-hcd failed: {status}"
+                )));
+            }
+        }
         Self::attach_at(Path::new(ROOT)).await
     }
     async fn attach_at(root: &Path) -> Result<(Self, Either<UnixStream, TcpStream>), AttachError> {
