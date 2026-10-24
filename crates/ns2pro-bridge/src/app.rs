@@ -34,7 +34,7 @@ impl AppError {
                 "Linux: check Bluetooth adapter availability. Windows: needs a Bluetooth LE adapter and permission."
             }
             Self::Attach(_) => {
-                "Linux: check vhci-hcd kernel support and root permissions. Windows: install a supported usbip-win2 driver. Use --no-auto-attach for a manual host."
+                "Linux: check vhci-hcd kernel support. Windows: install a supported usbip-win2 driver. Use --no-auto-attach for a manual host."
             }
             _ => "Use --log-level debug for native transport and connection diagnostics.",
         }

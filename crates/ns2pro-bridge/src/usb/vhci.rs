@@ -8,6 +8,7 @@ use std::{
 use tokio::net::{TcpListener, TcpStream, UnixStream};
 use tokio_util::either::Either;
 const ROOT: &str = "/sys/devices/platform/vhci_hcd.0";
+const DEVICE_ID: u32 = 0x10001;
 pub fn ensure_loaded() -> io::Result<()> {
     if !Path::new(ROOT).exists() {
         let status = std::process::Command::new("modprobe")
@@ -21,7 +22,6 @@ pub fn ensure_loaded() -> io::Result<()> {
     }
     Ok(())
 }
-const DEVICE_ID: u32 = 0x10001;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Port {
     port: u32,
