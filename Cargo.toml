@@ -7,11 +7,11 @@ version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/Cookiekira/ns2pro-ble-bridge"
+repository = "https://github.com/Cookiekira/ns2pro-bridge"
 
 [workspace.dependencies]
-ns2pro-proto = { path = "crates/ns2pro-proto" }
-ns2pro-usb = { path = "crates/ns2pro-usb" }
+ns2pro-proto = { path = "crates/ns2pro-proto", version = "0.3.0" }
+ns2pro-usb = { path = "crates/ns2pro-usb", version = "0.3.0" }
 
 aes = "0.9"
 libc = "0.2"

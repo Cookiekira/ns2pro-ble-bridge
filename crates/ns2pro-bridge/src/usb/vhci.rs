@@ -9,6 +9,19 @@ use tokio::net::{TcpListener, TcpStream, UnixStream};
 use tokio_util::either::Either;
 const ROOT: &str = "/sys/devices/platform/vhci_hcd.0";
 const DEVICE_ID: u32 = 0x10001;
+pub fn ensure_loaded() -> io::Result<()> {
+    if !Path::new(ROOT).exists() {
+        let status = std::process::Command::new("modprobe")
+            .arg("vhci-hcd")
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "modprobe vhci-hcd failed: {status}"
+            )));
+        }
+    }
+    Ok(())
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Port {
     port: u32,
@@ -49,7 +62,7 @@ fn status_files(root: &Path) -> Result<Vec<PathBuf>, AttachError> {
     let mut paths = Vec::new();
     for entry in fs::read_dir(root).map_err(|e| {
         AttachError::Platform(format!(
-            "read {}: {e}; load vhci-hcd (sudo modprobe vhci-hcd) and run auto-attach as root",
+            "read {}: {e}; check that the kernel supports vhci-hcd",
             root.display()
         ))
     })? {

@@ -1,8 +1,17 @@
 use clap::Parser;
 use ns2pro_bridge::{app, cli::Options};
+#[cfg(target_os = "linux")]
+mod elevation;
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
     let options = Options::parse();
+    #[cfg(target_os = "linux")]
+    if let Err(error) = elevation::elevate() {
+        eprintln!("could not elevate privileges: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
+    // Linux always runs as root after elevation.
     let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| options.log_level.clone());
     let filter = match tracing_subscriber::EnvFilter::try_new(filter) {
         Ok(v) => v,

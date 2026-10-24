@@ -21,7 +21,7 @@ jobs:
         run: |
           if compgen -G '/sys/class/bluetooth/hci*' >/dev/null; then
             cargo build --locked -p ns2pro-bridge
-            sudo target/debug/ns2pro-ble-bridge --bt-smoke-test
+            sudo target/debug/ns2pro-bridge --bt-smoke-test
           else
             echo 'SKIP native Bluetooth smoke: no adapter on runner'
           fi

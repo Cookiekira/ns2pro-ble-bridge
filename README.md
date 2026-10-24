@@ -4,18 +4,21 @@ Use a **Switch 2 Pro Controller over Bluetooth** as a wired Switch 2 Pro Control
 
 ## Start here (Linux)
 
-1. Download `ns2pro-ble-bridge-<version>-linux-x64` (or `-linux-arm64`) from [Releases](https://github.com/Cookiekira/ns2pro-ble-bridge/releases/latest), then run `chmod +x` on it.
-2. Load the virtual USB driver: `sudo modprobe vhci-hcd`
-3. Start the bridge: `sudo ./ns2pro-ble-bridge-<version>-linux-x64`
-4. **First time only:** press the controller's **sync button** (top edge) to pair. The bridge remembers it.
-5. Wait for `controller initialized; receiving input`. Open Steam and play.
+1. Install with `cargo binstall ns2pro-bridge`, or download `ns2pro-bridge-<version>-linux-x64` (or `-linux-arm64`) from [Releases](https://github.com/Cookiekira/ns2pro-bridge/releases/latest) and run `chmod +x` on it.
+2. Start with `ns2pro-bridge` (or `./ns2pro-bridge-<version>-linux-x64` for a download). Enter your password when prompted; the bridge loads the virtual USB driver automatically.
+3. **First time only:** press the controller's **sync button** (top edge) to pair. The bridge remembers it.
+4. Wait for `controller initialized; receiving input`. Open Steam and play.
 
-Next time, run step 3 and press **Home** to wake the controller. Stop with **Ctrl+C**; the virtual controller detaches cleanly.
+Next time, run step 2 and press **Home** to wake the controller. Stop with **Ctrl+C**; the virtual controller also detaches cleanly on SIGTERM or when the terminal closes (SIGHUP).
+
+Linux binaries need glibc ≥ 2.39.
+The binary runs as root after the password prompt, so keep it in a path only you can write.
+Elevation uses `sudo` in a terminal and `pkexec` when stdin is not a TTY.
 
 ## Windows
 
 1. Install the signed [usbip-win2](https://github.com/vadimgrn/usbip-win2) driver (supported: v0.9.6.1–v0.9.8.1).
-2. Download `ns2pro-ble-bridge-<version>-win-x64.exe` from [Releases](https://github.com/Cookiekira/ns2pro-ble-bridge/releases/latest).
+2. Download `ns2pro-bridge-<version>-win-x64.exe` from [Releases](https://github.com/Cookiekira/ns2pro-bridge/releases/latest).
 3. Run it, then press the controller's **sync button** the first time.
 
 Windows is verified by native CI build and tests only. It has not been tested on real Windows Bluetooth or driver hardware yet.
@@ -24,8 +27,8 @@ Windows is verified by native CI build and tests only. It has not been tested on
 
 | You see | Fix |
 | --- | --- |
-| Permission error at startup | Run with `sudo`. |
-| `vhci` / attach error | `sudo modprobe vhci-hcd`, then start again. |
+| Elevation / permission error at startup | Check that `sudo` (terminal) or `pkexec` (no TTY) is installed and permits elevation. |
+| `vhci` / attach error | Check that your kernel provides `vhci-hcd` and that `modprobe` is installed; the bridge loads it automatically. |
 | Steam shows the controller but no input (Linux, 32-bit Steam) | `sudo pacman -S --needed lib32-libusb` (Arch/CachyOS; use your distro's 32-bit libusb), then fully restart Steam. |
 | `kernel removed virtual controller` | The virtual USB device was detached. Start the bridge again. |
 
@@ -33,7 +36,7 @@ Debug details: add `--log-level debug`. Every 5 s the log shows report rate, lat
 
 ## Use the controller on another machine
 
-1. On the machine with Bluetooth: `sudo ./ns2pro-ble-bridge-<version>-linux-x64 --no-auto-attach --usb-addr 0.0.0.0:3241`
+1. On the machine with Bluetooth: `ns2pro-bridge --no-auto-attach --usb-addr 0.0.0.0:3241`
 2. On the other machine: `sudo usbip --tcp-port 3241 attach -r HOST -b 1-1`
 
 The USB/IP server has no authentication: expose it only to trusted machines.
@@ -54,7 +57,7 @@ More options:
 | --- | --- | --- |
 | `--pair-host` | off | Re-pair the host once per run |
 | `--host-address MAC` | adapter | Host address used for pairing |
-| `--cache-file PATH` | local app data `Ns2Pro.BleBridge/controller-cache.json` | Saved controller, JSON `{"address":"AA:BB:CC:DD:EE:FF"}` |
+| `--cache-file PATH` | Linux: `/var/lib/ns2pro-bridge/controller-cache.json`; Windows: local app data `ns2pro-bridge/controller-cache.json` | Saved controller, JSON `{"address":"AA:BB:CC:DD:EE:FF"}` |
 | `--feature-flags FLAGS` | `0x07` | Buttons, sticks, IMU (hex or decimal) |
 
 Exit codes: `0` normal, `1` runtime failure, `2` bad arguments or USB setup failure. Options are case-sensitive; there is no `/?` alias.
@@ -73,7 +76,9 @@ cargo build --locked --release -p ns2pro-bridge
 cargo test --locked --workspace
 ```
 
-Output: `target/release/ns2pro-ble-bridge` (`.exe` on Windows). Needs stable Rust (edition 2024).
+Output: `target/release/ns2pro-bridge` (`.exe` on Windows). Needs stable Rust (edition 2024).
+
+Publishing to crates.io is a manual release step, in order: `ns2pro-proto`, `ns2pro-usb`, then `ns2pro-bridge`.
 
 ## Credits and license
 
