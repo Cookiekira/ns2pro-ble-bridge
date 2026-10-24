@@ -4,8 +4,12 @@ Use a **Switch 2 Pro Controller over Bluetooth** as a wired Switch 2 Pro Control
 
 ## Start here (Linux)
 
-1. Install with `cargo binstall ns2pro-bridge`, or download `ns2pro-bridge-<version>-linux-x64` (or `-linux-arm64`) from [Releases](https://github.com/Cookiekira/ns2pro-bridge/releases/latest) and run `chmod +x` on it.
-2. Start with `ns2pro-bridge` (or `./ns2pro-bridge-<version>-linux-x64` for a download). Enter your password when prompted; the bridge loads the virtual USB driver automatically.
+1. Install with `cargo binstall ns2pro-bridge`, or use the shell installer:
+   ```sh
+   curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Cookiekira/ns2pro-bridge/releases/latest/download/ns2pro-bridge-installer.sh | sh
+   ```
+   For a manual install, download and extract `ns2pro-bridge-x86_64-unknown-linux-gnu.tar.xz` (or `ns2pro-bridge-aarch64-unknown-linux-gnu.tar.xz`) from [Releases](https://github.com/Cookiekira/ns2pro-bridge/releases/latest).
+2. Start with `ns2pro-bridge` (or `./ns2pro-bridge` from the extracted directory). Enter your password when prompted; the bridge loads the virtual USB driver automatically.
 3. **First time only:** press the controller's **sync button** (top edge) to pair. The bridge remembers it.
 4. Wait for `controller initialized; receiving input`. Open Steam and play.
 
@@ -18,7 +22,11 @@ Elevation uses `sudo` in a terminal and `pkexec` when stdin is not a TTY.
 ## Windows
 
 1. Install the signed [usbip-win2](https://github.com/vadimgrn/usbip-win2) driver (supported: v0.9.6.1–v0.9.8.1).
-2. Download `ns2pro-bridge-<version>-win-x64.exe` from [Releases](https://github.com/Cookiekira/ns2pro-bridge/releases/latest).
+2. Install with `cargo binstall ns2pro-bridge`, or use the PowerShell installer:
+   ```powershell
+   irm https://github.com/Cookiekira/ns2pro-bridge/releases/latest/download/ns2pro-bridge-installer.ps1 | iex
+   ```
+   For a manual install, download and extract `ns2pro-bridge-x86_64-pc-windows-msvc.zip` from [Releases](https://github.com/Cookiekira/ns2pro-bridge/releases/latest).
 3. Run it, then press the controller's **sync button** the first time.
 
 Windows is verified by native CI build and tests only. It has not been tested on real Windows Bluetooth or driver hardware yet.
@@ -78,7 +86,7 @@ cargo test --locked --workspace
 
 Output: `target/release/ns2pro-bridge` (`.exe` on Windows). Needs stable Rust (edition 2024).
 
-Publishing to crates.io is a manual release step, in order: `ns2pro-proto`, `ns2pro-usb`, then `ns2pro-bridge`.
+Releasing: merge the release-plz PR to publish the workspace crates and tag `v<version>`; dist then builds the GitHub release. Configure the `CARGO_REGISTRY_TOKEN` secret (crates.io publish-new/publish-update) and `RELEASE_PLZ_TOKEN` secret ([fine-grained GitHub PAT](https://release-plz.dev/docs/github/token#use-a-personal-access-token) for this repo with Contents and Pull requests read/write so tags trigger dist).
 
 ## Credits and license
 

@@ -1,0 +1,11 @@
+[workspace]
+release_always = false
+changelog_update = false
+git_release_enable = false
+git_tag_enable = false
+
+[[package]]
+name = "ns2pro-bridge"
+changelog_update = true
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
