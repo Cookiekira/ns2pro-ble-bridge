@@ -8,6 +8,19 @@ use std::{
 use tokio::net::{TcpListener, TcpStream, UnixStream};
 use tokio_util::either::Either;
 const ROOT: &str = "/sys/devices/platform/vhci_hcd.0";
+pub fn ensure_loaded() -> io::Result<()> {
+    if !Path::new(ROOT).exists() {
+        let status = std::process::Command::new("modprobe")
+            .arg("vhci-hcd")
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "modprobe vhci-hcd failed: {status}"
+            )));
+        }
+    }
+    Ok(())
+}
 const DEVICE_ID: u32 = 0x10001;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Port {
@@ -87,16 +100,6 @@ pub struct Attached {
 }
 impl Attached {
     pub async fn attach() -> Result<(Self, Either<UnixStream, TcpStream>), AttachError> {
-        if unsafe { libc::geteuid() } == 0 && !Path::new(ROOT).exists() {
-            let status = std::process::Command::new("modprobe")
-                .arg("vhci-hcd")
-                .status()?;
-            if !status.success() {
-                return Err(AttachError::Platform(format!(
-                    "modprobe vhci-hcd failed: {status}"
-                )));
-            }
-        }
         Self::attach_at(Path::new(ROOT)).await
     }
     async fn attach_at(root: &Path) -> Result<(Self, Either<UnixStream, TcpStream>), AttachError> {

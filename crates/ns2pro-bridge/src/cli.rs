@@ -34,20 +34,15 @@ pub struct Options {
     #[arg(long, hide = true)]
     pub bt_smoke_test: bool,
 }
+#[cfg(target_os = "linux")]
 fn default_cache() -> PathBuf {
-    #[cfg(target_os = "linux")]
-    let root = unsafe { libc::geteuid() } == 0;
-    #[cfg(not(target_os = "linux"))]
-    let root = false;
-    cache_path(root, dirs::data_local_dir())
+    PathBuf::from("/var/lib/ns2pro-bridge/controller-cache.json")
 }
-fn cache_path(root: bool, data_dir: Option<PathBuf>) -> PathBuf {
-    let directory = if root {
-        PathBuf::from("/var/lib")
-    } else {
-        data_dir.expect("local data directory unavailable")
-    };
-    directory.join("ns2pro-bridge/controller-cache.json")
+#[cfg(windows)]
+fn default_cache() -> PathBuf {
+    dirs::data_local_dir()
+        .expect("local data directory unavailable")
+        .join("ns2pro-bridge/controller-cache.json")
 }
 fn parse_flags(s: &str) -> Result<u8, String> {
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
@@ -84,14 +79,19 @@ fn default_feature_flags() -> &'static str {
 mod tests {
     use super::*;
     #[test]
-    fn cache_paths_and_override() {
+    fn cache_default_and_override() {
+        let defaults = Options::try_parse_from(["bridge"]).unwrap();
+        #[cfg(target_os = "linux")]
         assert_eq!(
-            cache_path(true, None),
+            defaults.cache_file,
             PathBuf::from("/var/lib/ns2pro-bridge/controller-cache.json")
         );
+        #[cfg(windows)]
         assert_eq!(
-            cache_path(false, Some(PathBuf::from("/home/user/.local/share"))),
-            PathBuf::from("/home/user/.local/share/ns2pro-bridge/controller-cache.json")
+            defaults.cache_file,
+            dirs::data_local_dir()
+                .unwrap()
+                .join("ns2pro-bridge/controller-cache.json")
         );
         let options =
             Options::try_parse_from(["bridge", "--cache-file", "/tmp/controller.json"]).unwrap();

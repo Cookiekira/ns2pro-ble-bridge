@@ -26,6 +26,8 @@ impl Attachment {
             tracing::info!(%address,"USB/IP server listening (busid 1-1)");
             Some(listener)
         } else {
+            #[cfg(target_os = "linux")]
+            super::vhci::ensure_loaded().map_err(Error::Setup)?;
             None
         };
         Ok(Self {

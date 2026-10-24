@@ -57,7 +57,7 @@ More options:
 | --- | --- | --- |
 | `--pair-host` | off | Re-pair the host once per run |
 | `--host-address MAC` | adapter | Host address used for pairing |
-| `--cache-file PATH` | `/var/lib/ns2pro-bridge/controller-cache.json` as root; local app data `ns2pro-bridge/controller-cache.json` otherwise | Saved controller, JSON `{"address":"AA:BB:CC:DD:EE:FF"}` |
+| `--cache-file PATH` | Linux: `/var/lib/ns2pro-bridge/controller-cache.json`; Windows: local app data `ns2pro-bridge/controller-cache.json` | Saved controller, JSON `{"address":"AA:BB:CC:DD:EE:FF"}` |
 | `--feature-flags FLAGS` | `0x07` | Buttons, sticks, IMU (hex or decimal) |
 
 Exit codes: `0` normal, `1` runtime failure, `2` bad arguments or USB setup failure. Options are case-sensitive; there is no `/?` alias.

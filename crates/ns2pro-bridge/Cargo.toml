@@ -15,7 +15,6 @@ path = "src/main.rs"
 ns2pro-proto.workspace = true
 ns2pro-usb.workspace = true
 clap.workspace = true
-dirs.workspace = true
 futures.workspace = true
 getrandom.workspace = true
 serde.workspace = true
@@ -31,6 +30,7 @@ uuid.workspace = true
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+dirs.workspace = true
 windows = { workspace = true, features = [
   "Devices_Bluetooth",
   "Devices_Bluetooth_Advertisement",

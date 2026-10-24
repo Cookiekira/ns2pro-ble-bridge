@@ -11,6 +11,7 @@ async fn main() -> std::process::ExitCode {
         eprintln!("could not elevate privileges: {error}");
         return std::process::ExitCode::FAILURE;
     }
+    // Linux always runs as root after elevation.
     let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| options.log_level.clone());
     let filter = match tracing_subscriber::EnvFilter::try_new(filter) {
         Ok(v) => v,

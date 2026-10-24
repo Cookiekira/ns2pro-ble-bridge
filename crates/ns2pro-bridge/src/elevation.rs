@@ -13,10 +13,13 @@ fn command(
     args: impl IntoIterator<Item = OsString>,
     rust_log: Option<OsString>,
 ) -> Command {
-    let mut command = Command::new(if tty { "sudo" } else { "pkexec" });
-    if tty {
+    let mut command = if tty {
+        let mut command = Command::new("sudo");
         command.arg("--");
-    }
+        command
+    } else {
+        Command::new("pkexec")
+    };
     command.arg("/usr/bin/env");
     if let Some(value) = rust_log {
         let mut assignment = OsString::from("RUST_LOG=");
@@ -45,36 +48,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn elevation_preserves_arguments_and_log_filter() {
-        for tty in [false, true] {
-            for log in [None, Some(OsString::from("ns2pro_bridge=debug,info"))] {
-                let command = command(
-                    tty,
-                    Path::new("/home/user/.cargo/bin/ns2pro-bridge"),
-                    ["--cache-file", "/tmp/cache with spaces.json"].map(OsString::from),
-                    log.clone(),
-                );
-                assert_eq!(command.get_program(), if tty { "sudo" } else { "pkexec" });
-                let mut expected = Vec::new();
-                if tty {
-                    expected.push(OsString::from("--"));
-                }
-                expected.push(OsString::from("/usr/bin/env"));
-                if let Some(log) = log {
-                    let mut assignment = OsString::from("RUST_LOG=");
-                    assignment.push(log);
-                    expected.push(assignment);
-                }
-                expected.extend(
-                    [
-                        "/home/user/.cargo/bin/ns2pro-bridge",
-                        "--cache-file",
-                        "/tmp/cache with spaces.json",
-                    ]
-                    .map(OsString::from),
-                );
-                assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
-            }
-        }
+    fn tty_uses_sudo_and_preserves_log_filter() {
+        let command = command(
+            true,
+            Path::new("/x"),
+            [OsString::from("--a")],
+            Some(OsString::from("debug")),
+        );
+        assert_eq!(command.get_program(), "sudo");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--", "/usr/bin/env", "RUST_LOG=debug", "/x", "--a"]
+        );
+    }
+
+    #[test]
+    fn no_tty_uses_pkexec_and_preserves_log_filter() {
+        let command = command(
+            false,
+            Path::new("/x"),
+            [OsString::from("--a")],
+            Some(OsString::from("debug")),
+        );
+        assert_eq!(command.get_program(), "pkexec");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["/usr/bin/env", "RUST_LOG=debug", "/x", "--a"]
+        );
+    }
+
+    #[test]
+    fn missing_log_filter_is_omitted_and_spaces_stay_in_one_argument() {
+        let command = command(
+            true,
+            Path::new("/home/user/.cargo/bin/ns2pro-bridge"),
+            ["--cache-file", "/tmp/cache with spaces.json"].map(OsString::from),
+            None,
+        );
+        assert_eq!(command.get_program(), "sudo");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "--",
+                "/usr/bin/env",
+                "/home/user/.cargo/bin/ns2pro-bridge",
+                "--cache-file",
+                "/tmp/cache with spaces.json"
+            ]
+        );
     }
 }
